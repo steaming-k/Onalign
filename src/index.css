@@ -1,0 +1,13 @@
+/* 앱 전역 기본 스타일. 브라우저 다크모드에서도 밝은 배경을 유지한다. */
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #fbfaf7;
+  color: #1f1e1d;
+  -webkit-font-smoothing: antialiased;
+}

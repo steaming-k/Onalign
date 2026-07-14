@@ -115,8 +115,9 @@
     .hero p.tagline {
       font-size: clamp(16px, 2.4vw, 20px);
       color: var(--ink-soft);
-      max-width: 34ch;
+      max-width: none;
       margin: 0 auto 40px;
+      width: 90%;
     }
     .hero .free-note { margin-top: 16px; font-size: 13px; color: var(--muted); }
 
@@ -151,7 +152,7 @@
     .how h2 { font-size: clamp(24px, 3.4vw, 32px); font-weight: 700; margin-bottom: 12px; letter-spacing: -.01em; }
     .how .sub { color: var(--ink-soft); margin-bottom: 64px; }
     .steps {
-      display: flex; justify-content: center; gap: 20px; flex-wrap: wrap;
+      display: flex; justify-content: center; gap: 8px; flex-wrap: wrap;
     }
     .step { flex: 1 1 190px; max-width: 220px; }
     .step .icon {
@@ -163,7 +164,7 @@
     .step .n { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .1em; }
     .step h3 { font-size: 17px; font-weight: 700; margin: 6px 0 6px; }
     .step p { font-size: 14px; color: var(--ink-soft); }
-    .step-arrow { align-self: center; color: var(--line); font-size: 24px; }
+    .step-arrow { align-self: center; color: var(--ink-soft); font-size: 24px; }
 
     /* ---------- 4. 차별점 ---------- */
     .diff { background: #f5f2ec; }

@@ -489,8 +489,10 @@ function GuideCoach({ phase, onGotoScreen }) {
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 9998, pointerEvents: "none", fontFamily: "sans-serif" }}>
-      {/* 전체를 덮는 모달이 아니라 pointerEvents:none 레이어라 뒤 화면은 그대로 조작 가능 */}
+    <div style={{ position: "fixed", inset: 0, zIndex: 9998, pointerEvents: "auto", background: "rgba(20,20,20,0.32)", fontFamily: "sans-serif" }}>
+      {/* 가이드가 떠있는 동안은 뒤 화면 조작을 완전히 막는 모달형 오버레이.
+          "다음/건너뛰기"를 누르기 전까지 다른 작업(포스트잇 추가 등)이 가능하면 가이드가 거슬리기만 하고
+          안 읽고 넘어가는 문제가 있어, 가이드를 다 보거나 건너뛰어야만 다음 작업이 가능하도록 강제한다. */}
       <style>{`@keyframes onalignPulse{0%{box-shadow:0 0 0 0 rgba(114,201,172,.55)}70%{box-shadow:0 0 0 8px rgba(114,201,172,0)}100%{box-shadow:0 0 0 0 rgba(114,201,172,0)}}`}</style>
 
       {active.target !== "vote-area" && (

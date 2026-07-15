@@ -15,12 +15,12 @@
       --tan-bg: #eecd9c;    --tan-bd: #dba965;    --tan-tx: #6b4415;
       --teal-bg: #a9e6d3;   --teal-bd: #72c9ac;   --teal-tx: #1e5c47;
 
-      --ink: #1f1e1d;
-      --ink-soft: #55524d;
-      --muted: #9a968f;
-      --line: #ece9e2;
-      --paper: #fbfaf7;
-      --dark: #242322;
+      --ink: #202020;
+      --ink-soft: #5a5a5a;
+      --muted: #969696;
+      --line: #e2e2e2;
+      --paper: #fafafa;
+      --dark: #242424;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -55,9 +55,9 @@
       color: #fff;
       padding: 15px 30px;
       font-size: 16px;
-      box-shadow: 0 6px 18px rgba(36, 35, 34, 0.18);
+      box-shadow: 0 6px 18px rgba(36, 36, 36, 0.18);
     }
-    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(36, 35, 34, 0.24); }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(36, 36, 36, 0.24); }
 
     section { padding: 96px 0; }
 
@@ -122,7 +122,7 @@
     .hero .free-note { margin-top: 16px; font-size: 13px; color: var(--muted); }
 
     /* ---------- 2. 문제 제기 ---------- */
-    .problem { background: var(--dark); color: #f2f1ec; text-align: center; }
+    .problem { background: var(--dark); color: #f2f2f2; text-align: center; }
     .problem h2 {
       font-size: clamp(24px, 3.4vw, 32px);
       font-weight: 700; letter-spacing: -.01em;
@@ -137,15 +137,15 @@
       font-weight: 800; line-height: 1; letter-spacing: -.03em;
       color: #fff;
     }
-    .stat .num .unit { font-size: .38em; font-weight: 700; margin-left: 4px; color: var(--tan-bg); }
-    .stat .label { font-size: 15px; color: #cfccc4; margin-top: 16px; }
-    .stat .src { font-size: 11px; color: #86827a; margin-top: 8px; }
+    .stat .num .unit { font-size: .38em; font-weight: 700; margin-left: 4px; color: #c7c7c7; }
+    .stat .label { font-size: 15px; color: #d0d0d0; margin-top: 16px; }
+    .stat .src { font-size: 11px; color: #8a8a8a; margin-top: 8px; }
     .research-link {
       display: inline-block; margin-top: 60px;
-      font-size: 13px; color: #b6b2a9; text-decoration: underline;
+      font-size: 13px; color: #b0b0b0; text-decoration: underline;
       text-underline-offset: 3px;
     }
-    .research-link:hover { color: #f2f1ec; }
+    .research-link:hover { color: #f2f2f2; }
 
     /* ---------- 3. 작동 방식 ---------- */
     .how { text-align: center; }
@@ -167,7 +167,7 @@
     .step-arrow { align-self: center; color: var(--ink-soft); font-size: 24px; }
 
     /* ---------- 4. 차별점 ---------- */
-    .diff { background: #f5f2ec; }
+    .diff { background: #f0f0f0; }
     .diff h2 { font-size: clamp(24px, 3.4vw, 32px); font-weight: 700; text-align: center; margin-bottom: 12px; letter-spacing: -.01em; }
     .diff .sub { text-align: center; color: var(--ink-soft); margin-bottom: 60px; }
     .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }

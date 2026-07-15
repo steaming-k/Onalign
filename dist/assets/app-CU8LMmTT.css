@@ -1,0 +1,1 @@
+:root{color-scheme:light}html,body{margin:0;padding:0;background:#fff;color:#202020;-webkit-font-smoothing:antialiased}button,input,textarea,select{transition:transform .15s cubic-bezier(.4,0,.2,1),background-color .15s ease,border-color .15s ease,box-shadow .15s ease,color .15s ease,opacity .15s ease}button:active:not(:disabled){transform:scale(.96)}

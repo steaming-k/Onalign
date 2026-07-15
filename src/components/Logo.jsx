@@ -29,7 +29,7 @@ export default function Logo({ onClick }) {
           flexShrink: 0,
         }}
       />
-      <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: "-0.02em", color: "#1f1e1d" }}>Onalign</span>
+      <span style={{ fontSize: 17, fontWeight: 800, letterSpacing: "-0.02em", color: "#202020" }}>Onalign</span>
     </button>
   );
 }

@@ -425,6 +425,9 @@ function GuideCoach({ phase, onGotoScreen }) {
   // 세션당 1회: 이번 세션에 이미 봤으면 -1(비활성)로 시작
   const [step, setStep] = useState(() => (guideDoneThisSession() ? -1 : 0));
   const [rect, setRect] = useState(null);
+  // 말풍선 실측 크기(화면이 좁아 텍스트가 더 꺾이면 높이가 달라짐) - 화면 밖으로 나가지 않도록 클램프할 때 사용
+  const bubbleRef = useRef(null);
+  const [bubbleSize, setBubbleSize] = useState({ width: 250, height: 120 });
 
   const active = step >= 0 && step < TOUR_STEPS.length ? TOUR_STEPS[step] : null;
 
@@ -464,6 +467,19 @@ function GuideCoach({ phase, onGotoScreen }) {
     };
   }, [active, phase]);
 
+  // 말풍선 실제 렌더 크기를 측정해둔다 (창 크기가 좁아지면 폭이 줄고 줄바꿈으로 높이가 늘어남 -> 화면 밖으로 못 나가게 이 값으로 위치를 클램프한다)
+  useEffect(() => {
+    const measure = () => {
+      if (bubbleRef.current) {
+        const r = bubbleRef.current.getBoundingClientRect();
+        setBubbleSize({ width: r.width, height: r.height });
+      }
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [step, rect]);
+
   const endTour = () => {
     try {
       sessionStorage.setItem(GUIDE_SESSION_KEY, "1");
@@ -484,8 +500,26 @@ function GuideCoach({ phase, onGotoScreen }) {
 
   if (!active || !rect || active.screen !== phase) return null;
 
-  const below = rect.bottom + 150 < window.innerHeight;
-  const centerX = Math.min(Math.max(rect.left + rect.width / 2, 140), window.innerWidth - 140);
+  // 화면이 좁아져도 말풍선이 밖으로 나가지 않도록: 폭은 뷰포트에 맞춰 줄이고,
+  // 위치는 실측 크기(bubbleSize) 기준으로 좌우/상하 여백 안쪽으로 클램프한다.
+  const margin = 12;
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+  const bubbleWidth = Math.min(250, viewportW - margin * 2);
+  const bubbleHeight = bubbleSize.height || 120;
+
+  const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
+  const left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
+
+  const spaceBelow = viewportH - rect.bottom;
+  const spaceAbove = rect.top;
+  const below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
+  const top = below
+    ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
+    : Math.max(rect.top - 14 - bubbleHeight, margin);
+
+  // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
+  const arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
@@ -513,27 +547,30 @@ function GuideCoach({ phase, onGotoScreen }) {
 
       <motion.div
         key={step}
+        ref={bubbleRef}
         initial={{ opacity: 0, scale: 0.92 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.2, ease: EASE }}
         style={{
           position: "absolute",
-          left: centerX,
-          ...(below ? { top: rect.bottom + 14, transform: "translateX(-50%)" } : { top: rect.top - 14, transform: "translate(-50%, -100%)" }),
-          width: 250,
+          left,
+          top,
+          width: bubbleWidth,
+          maxWidth: `calc(100vw - ${margin * 2}px)`,
           background: "#242424",
           color: "#f2f2f2",
           borderRadius: 12,
           padding: "14px 16px",
           boxShadow: "0 10px 32px rgba(0,0,0,.3)",
           pointerEvents: "auto",
+          boxSizing: "border-box",
         }}
       >
         <div
           style={{
             position: "absolute",
-            left: "50%",
-            transform: "translateX(-50%) rotate(45deg)",
+            left: arrowLeft - 6,
+            transform: "rotate(45deg)",
             width: 12,
             height: 12,
             background: "#242424",

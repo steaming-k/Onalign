@@ -1,15 +1,39 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { toPng } from "html-to-image";
 import { storage } from "./storage";
 import Logo from "./components/Logo";
 import ConfirmDialog from "./components/ConfirmDialog";
 
+// 화면 전환/요소 추가·삭제에 공통으로 쓰는 트랜지션 프리셋 (애플 스타일의 부드러운 완급 곡선).
+// 앞으로 새 화면·리스트를 추가할 때도 이 프리셋을 그대로 재사용한다.
+const EASE = [0.22, 1, 0.36, 1];
+// 탭(화면) 전환용: 나가는 화면은 absolute로 빠지면서 슬라이드-아웃, 들어오는 화면은 동시에 슬라이드-인 (교차 페이드).
+// mode="wait"로 순서를 기다리면 빈 화면이 잠깐 끼어들어 오히려 끊겨 보이므로, 겹치며 자리를 바꾸는 방식을 쓴다.
+const fadeSlide = {
+  initial: { opacity: 0, x: 24 },
+  animate: { opacity: 1, x: 0, position: "relative", transition: { duration: 0.32, ease: EASE } },
+  exit: { opacity: 0, x: -24, position: "absolute", transition: { duration: 0.32, ease: EASE } },
+  style: { width: "100%" },
+};
+const popIn = {
+  layout: true,
+  initial: { opacity: 0, scale: 0.92 },
+  animate: { opacity: 1, scale: 1 },
+  exit: { opacity: 0, scale: 0.92 },
+  transition: { duration: 0.18, ease: EASE },
+};
+
+// "이미지로 저장" 파일명에 쓰는 탭별 한글 라벨
+const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", document: "문서" };
+
 const PALETTE = [
-  { name: "pink", bg: "#f7d3de", border: "#e8a9bd", text: "#7a2e46" },
-  { name: "olive", bg: "#dde3ba", border: "#b9c488", text: "#4a5225" },
-  { name: "blue", bg: "#bcd9ee", border: "#8ab6d8", text: "#1f4c6b" },
-  { name: "purple", bg: "#d6c9ee", border: "#b09fd9", text: "#4a3670" },
-  { name: "tan", bg: "#eecd9c", border: "#dba965", text: "#6b4415" },
-  { name: "teal", bg: "#a9e6d3", border: "#72c9ac", text: "#1e5c47" },
+  { name: "pink", bg: "#ffd3e6", border: "#ff8fbf", text: "#8a1f56" },
+  { name: "olive", bg: "#e3f2c1", border: "#a3d977", text: "#3c6b1f" },
+  { name: "blue", bg: "#c7e6ff", border: "#7ab8f5", text: "#1a4a80" },
+  { name: "purple", bg: "#e6d9ff", border: "#b899f2", text: "#5b2f8a" },
+  { name: "tan", bg: "#ffe1b0", border: "#ffbc5c", text: "#8a5416" },
+  { name: "teal", bg: "#b8f2e2", border: "#5cd6b3", text: "#146b53" },
 ];
 
 // 프로젝트 목록은 하나의 인덱스 키로 관리하고, 각 프로젝트의 실제 보드 내용은
@@ -114,155 +138,6 @@ function pickColor(users) {
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
-// 캔버스에 "진행 과정 -> 최종 결과" 요약 이미지를 그려 PNG로 내보낸다.
-// 두 번 측정하는 대신 행 높이를 고정하고 긴 텍스트는 말줄임표로 자른다 -> 레이아웃 계산이 단순해짐
-function renderSummaryCanvas(project, board) {
-  const width = 1000;
-  const margin = 40;
-  const contentWidth = width - margin * 2;
-  const noteCols = 3;
-  const noteColWidth = (contentWidth - 16 * (noteCols - 1)) / noteCols;
-  const NOTE_ROW_H = 84;
-  const PROBLEM_ROW_H = 56;
-  const VOTE_ROW_H = 46;
-
-  const problemNotes = board.notes.filter((n) => n.isProblem);
-  const noteRows = Math.ceil(board.notes.length / noteCols) || 0;
-  const sortedProblems = [...problemNotes].sort(
-    (a, b) => (board.votes[b.id]?.length || 0) - (board.votes[a.id]?.length || 0)
-  );
-
-  const height =
-    margin * 2 +
-    100 + // 헤더(프로젝트명, 날짜)
-    46 + // 섹션1 제목
-    noteRows * (NOTE_ROW_H + 12) +
-    40 + // 섹션 간 여백
-    46 + // 섹션2 제목
-    problemNotes.length * PROBLEM_ROW_H +
-    40 +
-    46 + // 섹션3 제목
-    sortedProblems.length * VOTE_ROW_H +
-    40;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = Math.max(height, 500);
-  const ctx = canvas.getContext("2d");
-
-  const truncate = (text, maxWidth, font) => {
-    ctx.font = font;
-    if (ctx.measureText(text).width <= maxWidth) return text;
-    let t = text;
-    while (t.length > 0 && ctx.measureText(t + "…").width > maxWidth) {
-      t = t.slice(0, -1);
-    }
-    return t + "…";
-  };
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  let y = margin;
-
-  // 헤더
-  ctx.fillStyle = "#1a1a1a";
-  ctx.font = "600 26px sans-serif";
-  ctx.fillText(project.title, margin, y + 30);
-  ctx.fillStyle = "#888888";
-  ctx.font = "13px sans-serif";
-  const dateStr = new Date().toLocaleDateString("ko-KR");
-  ctx.fillText(`퍼실리테이션 보드 요약 · ${dateStr} · 참여자 ${Object.keys(board.users).length}명`, margin, y + 54);
-  y += 90;
-
-  // 섹션 1: 의견 모음 (진행 과정의 출발점)
-  ctx.fillStyle = "#1a1a1a";
-  ctx.font = "600 17px sans-serif";
-  ctx.fillText("1. 의견 모음", margin, y);
-  y += 30;
-  board.notes.forEach((note, i) => {
-    const col = i % noteCols;
-    const row = Math.floor(i / noteCols);
-    const x = margin + col * (noteColWidth + 16);
-    const cardY = y + row * (NOTE_ROW_H + 12);
-    const color = board.users[note.authors[0]]?.color || PALETTE[0];
-    ctx.fillStyle = color.bg;
-    ctx.strokeStyle = color.border;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(x, cardY, noteColWidth, NOTE_ROW_H, 8);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = color.text;
-    ctx.font = "13px sans-serif";
-    ctx.fillText(truncate(note.text, noteColWidth - 24, "13px sans-serif"), x + 12, cardY + 26);
-    ctx.font = "11px sans-serif";
-    ctx.globalAlpha = 0.75;
-    ctx.fillText(truncate(note.authors.join(", "), noteColWidth - 24, "11px sans-serif"), x + 12, cardY + NOTE_ROW_H - 12);
-    ctx.globalAlpha = 1;
-  });
-  if (board.notes.length === 0) {
-    ctx.fillStyle = "#aaaaaa";
-    ctx.font = "13px sans-serif";
-    ctx.fillText("작성된 의견이 없습니다.", margin, y + 16);
-  }
-  y += noteRows * (NOTE_ROW_H + 12) + 40;
-
-  // 섹션 2: 문제로 표시된 의견 (중간 결과)
-  ctx.fillStyle = "#1a1a1a";
-  ctx.font = "600 17px sans-serif";
-  ctx.fillText("2. 문제로 표시된 의견", margin, y);
-  y += 30;
-  problemNotes.forEach((p) => {
-    ctx.fillStyle = "#f7f7f5";
-    ctx.beginPath();
-    ctx.roundRect(margin, y, contentWidth, PROBLEM_ROW_H - 12, 8);
-    ctx.fill();
-    ctx.fillStyle = "#333333";
-    ctx.font = "14px sans-serif";
-    ctx.fillText(truncate(p.text, contentWidth - 30, "14px sans-serif"), margin + 16, y + 30);
-    y += PROBLEM_ROW_H;
-  });
-  if (problemNotes.length === 0) {
-    ctx.fillStyle = "#aaaaaa";
-    ctx.font = "13px sans-serif";
-    ctx.fillText("문제로 표시된 의견이 없습니다.", margin, y + 16);
-    y += 20;
-  }
-  y += 30;
-
-  // 섹션 3: 우선순위별 결과 (득표순, 진행 과정의 도착점)
-  ctx.fillStyle = "#1a1a1a";
-  ctx.font = "600 17px sans-serif";
-  ctx.fillText("3. 우선순위별 결과", margin, y);
-  y += 30;
-  const maxVotes = Math.max(1, ...sortedProblems.map((p) => board.votes[p.id]?.length || 0));
-  const barAreaWidth = contentWidth - 260;
-  sortedProblems.forEach((p, i) => {
-    const votes = board.votes[p.id]?.length || 0;
-    ctx.fillStyle = "#333333";
-    ctx.font = "13px sans-serif";
-    ctx.fillText(`${i + 1}.`, margin, y + 18);
-    ctx.fillText(truncate(p.text, 190, "13px sans-serif"), margin + 24, y + 18);
-    const barW = (votes / maxVotes) * barAreaWidth;
-    ctx.fillStyle = i === 0 ? "#d4537e" : "#c9c6bd";
-    ctx.beginPath();
-    ctx.roundRect(margin + 230, y + 4, Math.max(barW, 2), 16, 4);
-    ctx.fill();
-    ctx.fillStyle = "#666666";
-    ctx.font = "12px sans-serif";
-    ctx.fillText(`${votes}표`, margin + 240 + barAreaWidth, y + 17);
-    y += VOTE_ROW_H;
-  });
-  if (sortedProblems.length === 0) {
-    ctx.fillStyle = "#aaaaaa";
-    ctx.font = "13px sans-serif";
-    ctx.fillText("결과가 없습니다.", margin, y + 16);
-  }
-
-  return canvas;
-}
-
 // ===== 4번: 과정+결과 문서화 (표 중심) =====
 // 앱 내 문서 뷰와 다운로드가 같은 데이터를 쓰도록, 표에 필요한 값을 한 곳에서 계산한다.
 function buildDocModel(project, board) {
@@ -275,7 +150,8 @@ function buildDocModel(project, board) {
   const ranked = problemNotes
     .map((n) => ({ ...n, votes: board.votes[n.id]?.length || 0, voters: board.votes[n.id] || [] }))
     .sort((a, b) => b.votes - a.votes);
-  return { participants, notesByTopic, problemNotes, ranked };
+  const topRanked = ranked.slice(0, 5);
+  return { participants, notesByTopic, problemNotes, ranked, topRanked };
 }
 
 function esc(s) {
@@ -283,18 +159,70 @@ function esc(s) {
 }
 
 // 다운로드용 자립형 HTML 문서 문자열 생성 (브라우저에서 바로 열람·인쇄 가능)
-function buildDocHtml(project, board) {
-  const { participants, notesByTopic, problemNotes, ranked } = buildDocModel(project, board);
+// docType: "process"(과정 전체) | "result"(우선순위 TOP 5 결과만)
+function buildDocHtml(project, board, docType = "process") {
+  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
   const dateStr = new Date().toLocaleString("ko-KR");
   const topVote = ranked[0];
 
+  const style = `
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;color:#242424;max-width:860px;margin:0 auto;padding:40px 24px;line-height:1.6}
+  h1{font-size:26px;margin:0 0 4px}
+  .sub{color:#888;font-size:13px;margin-bottom:32px}
+  h2{font-size:18px;margin:36px 0 12px;padding-bottom:6px;border-bottom:2px solid #eee}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{border:1px solid #e0e0e0;padding:9px 12px;text-align:left;vertical-align:top}
+  thead th{background:#e9e9e9;font-weight:700}
+  tbody th{background:#f2f2f2;width:160px;white-space:nowrap}
+  .chip{display:inline-block;border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
+  .empty{color:#aaa}
+  .rank1 td{background:#fdf3f7}
+  .desc{color:#777;font-size:12.5px;margin-top:3px}
+  footer{margin-top:40px;color:#aaa;font-size:12px;text-align:center}`;
+
+  if (docType === "result") {
+    const overviewRows = [
+      ["프로젝트명", esc(project.title)],
+      ["문서 생성일시", esc(dateStr)],
+      ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+      ["최다 득표", topVote ? `${esc(topVote.text)} (${topVote.votes}표)` : "—"],
+    ]
+      .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
+      .join("");
+
+    const topRows = topRanked.length
+      ? topRanked
+          .map(
+            (p, i) =>
+              `<tr${i === 0 ? ' class="rank1"' : ""}><td>${i + 1}</td><td>${esc(p.text)}${p.description ? `<div class="desc">설명: ${esc(p.description)}</div>` : ""}</td><td>${p.votes}표</td><td>${esc(p.voters.join(", ")) || "—"}</td></tr>`
+          )
+          .join("")
+      : `<tr><td colspan="4" class="empty">결과가 없습니다.</td></tr>`;
+
+    return `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>${esc(project.title)} — 결과 문서</title>
+<style>${style}</style></head><body>
+<h1>${esc(project.title)}</h1>
+<div class="sub">Onalign 퍼실리테이션 결과 문서 · ${esc(dateStr)}</div>
+
+<h2>1. 개요</h2>
+<table><tbody>${overviewRows}</tbody></table>
+
+<h2>2. 우선순위 TOP 5 결과</h2>
+<table><thead><tr><th>순위</th><th>문제</th><th>득표</th><th>투표자</th></tr></thead><tbody>${topRows}</tbody></table>
+
+<footer>Generated by Onalign</footer>
+</body></html>`;
+  }
+
+  // docType === "process": 과정 전체 (개요·참여자·의견 모음·문제 정리)
   const overviewRows = [
     ["프로젝트명", esc(project.title)],
     ["문서 생성일시", esc(dateStr)],
     ["참여자 수", `${participants.length}명`],
     ["작성된 의견 수", `${board.notes.length}개`],
     ["문제로 표시된 의견 수", `${problemNotes.length}개`],
-    ["최다 득표", topVote ? `${esc(topVote.text)} (${topVote.votes}표)` : "—"],
   ]
     .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
     .join("");
@@ -321,38 +249,19 @@ function buildDocHtml(project, board) {
 
   const problemRows = problemNotes.length
     ? problemNotes
-        .map((n, i) => `<tr><td>${i + 1}</td><td>${esc(n.text)}</td><td>${esc(n.authors.join(", "))}</td></tr>`)
+        .map(
+          (n, i) =>
+            `<tr><td>${i + 1}</td><td>${esc(n.text)}${n.description ? `<div class="desc">설명: ${esc(n.description)}</div>` : ""}</td><td>${esc(n.authors.join(", "))}</td></tr>`
+        )
         .join("")
     : `<tr><td colspan="3" class="empty">문제로 표시된 의견이 없습니다.</td></tr>`;
 
-  const voteRows = ranked.length
-    ? ranked
-        .map(
-          (p, i) =>
-            `<tr${i === 0 ? ' class="rank1"' : ""}><td>${i + 1}</td><td>${esc(p.text)}</td><td>${p.votes}표</td><td>${esc(p.voters.join(", ")) || "—"}</td></tr>`
-        )
-        .join("")
-    : `<tr><td colspan="4" class="empty">결과가 없습니다.</td></tr>`;
-
   return `<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>${esc(project.title)} — 퍼실리테이션 문서</title>
-<style>
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;color:#242322;max-width:860px;margin:0 auto;padding:40px 24px;line-height:1.6}
-  h1{font-size:26px;margin:0 0 4px}
-  .sub{color:#888;font-size:13px;margin-bottom:32px}
-  h2{font-size:18px;margin:36px 0 12px;padding-bottom:6px;border-bottom:2px solid #eee}
-  table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{border:1px solid #e8e6df;padding:9px 12px;text-align:left;vertical-align:top}
-  thead th{background:#f5f2ec;font-weight:700}
-  tbody th{background:#faf9f6;width:160px;white-space:nowrap}
-  .chip{display:inline-block;border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
-  .empty{color:#aaa}
-  .rank1 td{background:#fdf3f7}
-  footer{margin-top:40px;color:#aaa;font-size:12px;text-align:center}
-</style></head><body>
+<title>${esc(project.title)} — 과정 문서</title>
+<style>${style}</style></head><body>
 <h1>${esc(project.title)}</h1>
-<div class="sub">Onalign 퍼실리테이션 문서 · ${esc(dateStr)}</div>
+<div class="sub">Onalign 퍼실리테이션 과정 문서 · ${esc(dateStr)}</div>
 
 <h2>1. 개요</h2>
 <table><tbody>${overviewRows}</tbody></table>
@@ -363,14 +272,129 @@ function buildDocHtml(project, board) {
 <h2>3. 의견 모음 (과정)</h2>
 <table><thead><tr><th>주제</th><th>내용</th><th>작성자</th></tr></thead><tbody>${opinionRows}</tbody></table>
 
-<h2>4. 문제로 표시된 의견</h2>
+<h2>4. 문제 정리 및 부가 설명</h2>
 <table><thead><tr><th>#</th><th>문제</th><th>작성자</th></tr></thead><tbody>${problemRows}</tbody></table>
-
-<h2>5. 우선순위별 결과</h2>
-<table><thead><tr><th>순위</th><th>문제</th><th>득표</th><th>투표자</th></tr></thead><tbody>${voteRows}</tbody></table>
 
 <footer>Generated by Onalign</footer>
 </body></html>`;
+}
+
+function mdEsc(s) {
+  return String(s ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
+// 다운로드용 마크다운 문서 문자열 생성 (노션·구글독스 등에 붙여넣기 좋은 표 형식)
+function buildDocMarkdown(project, board, docType = "process") {
+  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
+  const dateStr = new Date().toLocaleString("ko-KR");
+  const topVote = ranked[0];
+
+  if (docType === "result") {
+    const overviewRows = [
+      ["프로젝트명", project.title],
+      ["문서 생성일시", dateStr],
+      ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+      ["최다 득표", topVote ? `${topVote.text} (${topVote.votes}표)` : "—"],
+    ]
+      .map(([k, v]) => `| ${mdEsc(k)} | ${mdEsc(v)} |`)
+      .join("\n");
+
+    const topRows = topRanked.length
+      ? topRanked
+          .map((p, i) => {
+            const text = p.description ? `${p.text} (설명: ${p.description})` : p.text;
+            return `| ${i + 1} | ${mdEsc(text)} | ${p.votes}표 | ${mdEsc(p.voters.join(", ")) || "—"} |`;
+          })
+          .join("\n")
+      : `| - | 결과가 없습니다. | - | - |`;
+
+    return `# ${project.title}
+
+Onalign 퍼실리테이션 결과 문서 · ${dateStr}
+
+## 1. 개요
+
+| 항목 | 내용 |
+| --- | --- |
+${overviewRows}
+
+## 2. 우선순위 TOP 5 결과
+
+| 순위 | 문제 | 득표 | 투표자 |
+| --- | --- | --- | --- |
+${topRows}
+
+---
+Generated by Onalign
+`;
+  }
+
+  // docType === "process": 과정 전체 (개요·참여자·의견 모음·문제 정리)
+  const overviewRows = [
+    ["프로젝트명", project.title],
+    ["문서 생성일시", dateStr],
+    ["참여자 수", `${participants.length}명`],
+    ["작성된 의견 수", `${board.notes.length}개`],
+    ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+  ]
+    .map(([k, v]) => `| ${mdEsc(k)} | ${mdEsc(v)} |`)
+    .join("\n");
+
+  const participantRows = participants.length
+    ? participants.map((p) => `| ${mdEsc(p.name)} | ${p.color.name} |`).join("\n")
+    : `| - | 참여자가 없습니다. |`;
+
+  const opinionRows = board.notes.length
+    ? notesByTopic
+        .flatMap((t) =>
+          t.notes.map((n) => {
+            const text = (n.text || "(빈 포스트잇)") + (n.isProblem ? " `문제`" : "");
+            return `| ${mdEsc(t.title)} | ${mdEsc(text)} | ${mdEsc(n.authors.join(", "))} |`;
+          })
+        )
+        .join("\n")
+    : `| - | 작성된 의견이 없습니다. | - |`;
+
+  const problemRows = problemNotes.length
+    ? problemNotes
+        .map((n, i) => {
+          const text = n.description ? `${n.text} (설명: ${n.description})` : n.text;
+          return `| ${i + 1} | ${mdEsc(text)} | ${mdEsc(n.authors.join(", "))} |`;
+        })
+        .join("\n")
+    : `| - | 문제로 표시된 의견이 없습니다. | - |`;
+
+  return `# ${project.title}
+
+Onalign 퍼실리테이션 과정 문서 · ${dateStr}
+
+## 1. 개요
+
+| 항목 | 내용 |
+| --- | --- |
+${overviewRows}
+
+## 2. 참여자
+
+| 이름 | 배정 색상 |
+| --- | --- |
+${participantRows}
+
+## 3. 의견 모음 (과정)
+
+| 주제 | 내용 | 작성자 |
+| --- | --- | --- |
+${opinionRows}
+
+## 4. 문제 정리 및 부가 설명
+
+| # | 문제 | 작성자 |
+| --- | --- | --- |
+${problemRows}
+
+---
+Generated by Onalign
+`;
 }
 
 // ===== 2번 관련: 작업 흐름 안내 투어 (세션당 1회) =====
@@ -385,6 +409,8 @@ const TOUR_STEPS = [
   { target: "problem-area", screen: "problem", text: "문제 문구를 여기서 다듬으세요" },
   { target: "vote-area", screen: "voting", text: "득표순 결과를 확인하세요" },
   { target: "save-image", screen: "voting", text: "결과를 문서·이미지로 남겨보세요" },
+  { target: "doc-type-process", screen: "document", text: "과정 문서에서는 의견 작성부터 문제 정리까지의 진행 과정을 확인할 수 있어요" },
+  { target: "doc-type-result", screen: "document", text: "결과 문서(문제 우선순위 TOP 5)에서는 최종 우선순위 TOP 5만 간추려 볼 수 있어요" },
 ];
 
 function guideDoneThisSession() {
@@ -467,28 +493,34 @@ function GuideCoach({ phase, onGotoScreen }) {
       {/* 전체를 덮는 모달이 아니라 pointerEvents:none 레이어라 뒤 화면은 그대로 조작 가능 */}
       <style>{`@keyframes onalignPulse{0%{box-shadow:0 0 0 0 rgba(114,201,172,.55)}70%{box-shadow:0 0 0 8px rgba(114,201,172,0)}100%{box-shadow:0 0 0 0 rgba(114,201,172,0)}}`}</style>
 
-      <div
-        style={{
-          position: "absolute",
-          top: rect.top - 6,
-          left: rect.left - 6,
-          width: rect.width + 12,
-          height: rect.height + 12,
-          border: "2px solid #72c9ac",
-          borderRadius: 12,
-          boxSizing: "border-box",
-          animation: "onalignPulse 1.8s infinite",
-        }}
-      />
+      {active.target !== "vote-area" && (
+        <div
+          style={{
+            position: "absolute",
+            top: rect.top - 6,
+            left: rect.left - 6,
+            width: rect.width + 12,
+            height: rect.height + 12,
+            border: "2px solid #72c9ac",
+            borderRadius: 12,
+            boxSizing: "border-box",
+            animation: "onalignPulse 1.8s infinite",
+          }}
+        />
+      )}
 
-      <div
+      <motion.div
+        key={step}
+        initial={{ opacity: 0, scale: 0.92 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.2, ease: EASE }}
         style={{
           position: "absolute",
           left: centerX,
           ...(below ? { top: rect.bottom + 14, transform: "translateX(-50%)" } : { top: rect.top - 14, transform: "translate(-50%, -100%)" }),
           width: 250,
-          background: "#242322",
-          color: "#f2f1ec",
+          background: "#242424",
+          color: "#f2f2f2",
           borderRadius: 12,
           padding: "14px 16px",
           boxShadow: "0 10px 32px rgba(0,0,0,.3)",
@@ -502,49 +534,56 @@ function GuideCoach({ phase, onGotoScreen }) {
             transform: "translateX(-50%) rotate(45deg)",
             width: 12,
             height: 12,
-            background: "#242322",
+            background: "#242424",
             ...(below ? { top: -6 } : { bottom: -6 }),
           }}
         />
-        <div style={{ fontSize: 11, color: "#8b877f", marginBottom: 6, position: "relative" }}>
+        <div style={{ fontSize: 11, color: "#8a8a8a", marginBottom: 6, position: "relative" }}>
           가이드 {step + 1} / {TOUR_STEPS.length}
         </div>
         <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 12, position: "relative" }}>{active.text}</div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, position: "relative" }}>
           <button
             onClick={endTour}
-            style={{ border: "none", background: "none", color: "#8b877f", fontSize: 12, cursor: "pointer", padding: 0 }}
+            style={{ border: "none", background: "none", color: "#8a8a8a", fontSize: 12, cursor: "pointer", padding: 0 }}
           >
             건너뛰기
           </button>
           <button
             onClick={next}
-            style={{ border: "none", background: "#f2f1ec", color: "#242322", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            style={{ border: "none", background: "#f2f2f2", color: "#242424", borderRadius: 8, padding: "6px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
           >
             {isLast ? "시작하기" : "다음"}
           </button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
 
-// 1번: 모든 화면 최상단에 고정되는 로고 영역. right에 화면별 우측 콘텐츠(프로필 등)를 넣는다.
-function TopBar({ onHome, right }) {
+// 1번: 모든 화면 최상단에 고정되는 로고 영역. 로고는 랜딩 페이지(첫 화면)로,
+// "내 프로젝트"는 앱 내 프로젝트 목록 화면으로 이동한다. right에 화면별 우측 콘텐츠(프로필 등)를 넣는다.
+// onSaveImage가 주어지면(보드 화면에서만) "내 프로젝트" 옆에 "이미지로 저장"을 같은 텍스트 스타일로 붙인다.
+function TopBar({ onProjects, onSaveImage, right }) {
+  const goHome = () => {
+    window.location.href = "/";
+  };
+  const navLinkStyle = { border: "none", background: "none", color: "#777", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0 };
   return (
     <header
       style={{
         position: "sticky",
         top: 0,
         zIndex: 100,
-        background: "rgba(251,250,247,0.92)",
+        background: "rgba(255,255,255,0.92)",
         backdropFilter: "blur(6px)",
         WebkitBackdropFilter: "blur(6px)",
-        borderBottom: "1px solid #ece9e2",
+        borderBottom: "1px solid #e0e0e0",
       }}
     >
       <div
         style={{
+          position: "relative",
           maxWidth: 900,
           margin: "0 auto",
           padding: "10px 16px",
@@ -555,7 +594,28 @@ function TopBar({ onHome, right }) {
           flexWrap: "wrap",
         }}
       >
-        <Logo onClick={onHome} />
+        <Logo onClick={goHome} />
+        {/* 헤더 전체 기준 정중앙에 고정 (좌우 콘텐츠 폭과 무관하게) */}
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 14,
+          }}
+        >
+          <button onClick={onProjects} style={navLinkStyle}>
+            내 프로젝트
+          </button>
+          {onSaveImage && (
+            <button data-guide="save-image" onClick={onSaveImage} style={navLinkStyle}>
+              이미지로 저장
+            </button>
+          )}
+        </div>
         {right}
       </div>
     </header>
@@ -566,6 +626,7 @@ export default function FacilitationBoard() {
   const [projects, setProjects] = useState(null);
   const [selectedProject, setSelectedProject] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newProjectGoal, setNewProjectGoal] = useState(""); // 프로젝트 목표 한 줄(선택 입력)
   const [name, setName] = useState(null);
   const [nameInput, setNameInput] = useState("");
   const [board, setBoard] = useState(emptyBoard());
@@ -574,10 +635,18 @@ export default function FacilitationBoard() {
   const [mergeMode, setMergeMode] = useState(false);
   const [selected, setSelected] = useState([]);
   const [confirmState, setConfirmState] = useState(null); // { title, message, confirmLabel, onConfirm }
+  const [docType, setDocType] = useState("process"); // "문서" 탭에서 선택한 문서 종류: 과정 | 결과(TOP 5)
+  const [parkingOpen, setParkingOpen] = useState(false); // 보류함 접이식 섹션 열림 여부 (기본 닫힘)
   const boardRef = useRef(board);
   boardRef.current = board;
   // 드래그 중이거나 포스트잇을 편집 중일 때는 2초 폴링이 로컬 변경을 덮어쓰지 않도록 잠시 멈춘다
   const suspendPollRef = useRef(false);
+  // 보류함 항목 클릭 시 원래 의견 보드로 스크롤 이동하기 위한 topic별 DOM 참조
+  const topicRefs = useRef({});
+  // "이미지로 저장": 현재 탭에 실제로 렌더링된 화면 전체를 그대로 캡처하기 위한 DOM 참조
+  const phaseContentRef = useRef(null);
+  // 문서 탭 전용 "이미지로 저장": 다운로드 버튼 등 UI를 빼고 문서 내용(표)만 캡처하기 위한 DOM 참조
+  const docContentRef = useRef(null);
 
   // 프로젝트 인덱스 로드 (목록 화면에서 항상 최신 상태 유지)
   const loadProjects = useCallback(async () => {
@@ -596,13 +665,32 @@ export default function FacilitationBoard() {
   const createProject = async () => {
     const title = newProjectTitle.trim();
     if (!title) return;
-    const project = { id: uid(), title, createdAt: Date.now() };
+    const project = { id: uid(), title, goal: newProjectGoal.trim(), createdAt: Date.now() };
     const nextList = [project, ...(projects || [])];
     await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
     await storage.set(boardKeyOf(project.id), JSON.stringify(emptyBoard()), true);
     setProjects(nextList);
     setNewProjectTitle("");
+    setNewProjectGoal("");
     setSelectedProject(project);
+  };
+
+  // 프로젝트 목표 한 줄 수정. 프로젝트 메타데이터(PROJECTS_INDEX_KEY)에 저장되므로
+  // 목록과 현재 selectedProject 스냅샷을 함께 갱신해야 화면에 바로 반영된다.
+  const updateProjectGoal = async (goalText) => {
+    if (!selectedProject) return;
+    const goal = goalText.trim();
+    const nextList = (projects || []).map((p) => (p.id === selectedProject.id ? { ...p, goal } : p));
+    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
+    setProjects(nextList);
+    setSelectedProject((prev) => (prev ? { ...prev, goal } : prev));
+  };
+
+  // 프로젝트 고정. 고정된 프로젝트는 목록 정렬 시 항상 위로 온다 (updateProjectGoal과 동일한 패턴으로 인덱스만 갱신)
+  const togglePinProject = async (id) => {
+    const nextList = (projects || []).map((p) => (p.id === id ? { ...p, pinned: !p.pinned } : p));
+    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
+    setProjects(nextList);
   };
 
   const deleteProject = async (id) => {
@@ -706,7 +794,7 @@ export default function FacilitationBoard() {
     if (!name) return;
     await loadBoard();
     const current = boardRef.current;
-    const note = { id: uid(), text: "", authors: [name], topicId, isProblem: false };
+    const note = { id: uid(), text: "", authors: [name], topicId, isProblem: false, isParked: false };
     await saveBoard({ ...current, notes: [...current.notes, note] });
     setJustCreatedId(note.id);
   };
@@ -782,6 +870,25 @@ export default function FacilitationBoard() {
     });
   };
 
+  // 포스트잇 설명을 타이핑하는 동안은 로컬 상태만 갱신
+  const editNoteDescriptionLocal = (id, description) => {
+    setBoard((prev) => ({
+      ...prev,
+      notes: prev.notes.map((n) => (n.id === id ? { ...n, description } : n)),
+    }));
+  };
+
+  // 설명 편집을 마칠 때 저장
+  const commitNoteDescription = async (id) => {
+    const myDescription = boardRef.current.notes.find((n) => n.id === id)?.description ?? "";
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({
+      ...current,
+      notes: current.notes.map((n) => (n.id === id ? { ...n, description: myDescription } : n)),
+    });
+  };
+
   // 서로 다른 의견 보드(topic)에 속한 포스트잇은 함께 선택할 수 없게 막는다 -> 병합은 같은 주제 안에서만 의미가 있음
   const toggleSelect = (id, topicId) => {
     setSelected((prev) => {
@@ -808,6 +915,7 @@ export default function FacilitationBoard() {
       authors: [...new Set(chosen.flatMap((n) => n.authors))],
       topicId: chosen[0].topicId,
       isProblem: false,
+      isParked: false,
     };
     await saveBoard({ ...current, notes: [...rest, merged], votes });
     setSelected([]);
@@ -823,6 +931,7 @@ export default function FacilitationBoard() {
   };
 
   // 6번: "문제로" 토글. 노트 자체에 isProblem을 표시(복제 없음). 해제 시 그 노트의 표는 정리.
+  // 문제와 보류는 동시에 될 수 없으므로, 문제로 표시하면 보류 상태는 자동으로 해제한다.
   const toggleProblem = async (noteId) => {
     await loadBoard();
     const current = boardRef.current;
@@ -832,9 +941,35 @@ export default function FacilitationBoard() {
     if (!willBeProblem) delete votes[noteId];
     await saveBoard({
       ...current,
-      notes: current.notes.map((n) => (n.id === noteId ? { ...n, isProblem: willBeProblem } : n)),
+      notes: current.notes.map((n) =>
+        n.id === noteId ? { ...n, isProblem: willBeProblem, isParked: willBeProblem ? false : n.isParked } : n
+      ),
       votes,
     });
+  };
+
+  // 보류함 토글. isProblem과 동일한 패턴(플래그 하나, 복제 없음)을 따르되,
+  // 원래 의견 보드 자리에는 그대로 남고 보류함 목록에도 함께 나타난다(표시만 두 곳).
+  // 문제 상태와는 동시에 될 수 없으므로, 보류로 표시하면 문제 상태와 표는 함께 정리한다.
+  const toggleParked = async (noteId) => {
+    await loadBoard();
+    const current = boardRef.current;
+    const target = current.notes.find((n) => n.id === noteId);
+    const willBeParked = !target?.isParked;
+    const votes = { ...current.votes };
+    if (willBeParked) delete votes[noteId];
+    await saveBoard({
+      ...current,
+      notes: current.notes.map((n) =>
+        n.id === noteId ? { ...n, isParked: willBeParked, isProblem: willBeParked ? false : n.isProblem } : n
+      ),
+      votes,
+    });
+  };
+
+  // 보류함 항목 클릭 시 원래 속한 의견 보드로 스크롤 이동
+  const scrollToTopic = (topicId) => {
+    topicRefs.current[topicId]?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   const setPhase = async (phase) => {
@@ -871,21 +1006,47 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, votesPerUser: n });
   };
 
-  const downloadSummaryImage = () => {
-    const canvas = renderSummaryCanvas(selectedProject, board);
+  // "이미지로 저장": 현재 보고 있는 탭에 실제로 렌더링된 화면 전체(스크롤 영역 포함)를 그대로 캡처한다
+  const downloadPhaseImage = async () => {
+    const node = phaseContentRef.current;
+    if (!node) return;
+    const dataUrl = await toPng(node, { backgroundColor: "#ffffff", pixelRatio: 2 });
     const link = document.createElement("a");
-    link.download = `${selectedProject.title}-요약.png`;
-    link.href = canvas.toDataURL("image/png");
+    link.download = `${selectedProject.title}-${PHASE_LABELS[board.phase] || "화면"}.png`;
+    link.href = dataUrl;
     link.click();
   };
 
-  // 4번(문서): 표 중심 문서를 HTML 파일로 내려받기
-  const downloadDoc = () => {
-    const html = buildDocHtml(selectedProject, board);
+  // 문서 탭 전용 "이미지로 저장": 토글/다운로드 버튼은 빼고 문서 내용(표)만 캡처한다
+  const downloadDocImage = async () => {
+    const node = docContentRef.current;
+    if (!node) return;
+    const dataUrl = await toPng(node, { backgroundColor: "#ffffff", pixelRatio: 2 });
+    const link = document.createElement("a");
+    link.download = `${selectedProject.title}-${docType === "result" ? "결과" : "과정"}문서.png`;
+    link.href = dataUrl;
+    link.click();
+  };
+
+  // 4번(문서): 표 중심 문서를 HTML 파일로 내려받기. docType으로 "과정" 문서와 "결과"(TOP 5) 문서를 구분한다.
+  const downloadDoc = (type) => {
+    const html = buildDocHtml(selectedProject, board, type);
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.download = `${selectedProject.title}-문서.html`;
+    link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.html`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // 4번(문서): 표 중심 문서를 마크다운 파일로 내려받기 (노션·구글독스 등에 붙여넣기 좋음)
+  const downloadDocMarkdown = (type) => {
+    const md = buildDocMarkdown(selectedProject, board, type);
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.md`;
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
@@ -895,13 +1056,13 @@ export default function FacilitationBoard() {
   if (!selectedProject) {
     return (
       <div>
-        <TopBar onHome={backToProjects} />
+        <TopBar onProjects={backToProjects} />
         <div style={{ maxWidth: 520, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
           <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>퍼실리테이션 보드</div>
           <div style={{ fontSize: 13, color: "#888", marginBottom: 24 }}>
             프로젝트별로 진행 내용이 저장됩니다. 이전 프로젝트는 언제든 다시 열어볼 수 있어요.
           </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
             <input
               value={newProjectTitle}
               onChange={(e) => setNewProjectTitle(e.target.value)}
@@ -911,20 +1072,37 @@ export default function FacilitationBoard() {
             />
             <button
               onClick={createProject}
-              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#2c2c2c", color: "white", cursor: "pointer", whiteSpace: "nowrap" }}
+              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer", whiteSpace: "nowrap" }}
             >
               + 새 프로젝트
             </button>
           </div>
+          {/* 2번: 프로젝트 목표 한 줄(선택). 시작 시점에 합의를 남겨두기 위한 필드로, 비워도 생성 가능하다. */}
+          <div style={{ fontSize: 12, color: "#999", marginBottom: 4 }}>이번 프로젝트에서 결정하려는 것 (선택)</div>
+          <input
+            value={newProjectGoal}
+            onChange={(e) => setNewProjectGoal(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && createProject()}
+            placeholder="예: 신규 유입 사용자를 늘릴 방법 3가지 찾기"
+            style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 24, boxSizing: "border-box" }}
+          />
           {projects === null && <div style={{ color: "#aaa", fontSize: 13 }}>불러오는 중...</div>}
           {projects && projects.length === 0 && (
             <div style={{ color: "#aaa", fontSize: 13 }}>아직 생성된 프로젝트가 없습니다.</div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <AnimatePresence mode="popLayout">
             {projects &&
-              projects.map((p) => (
-                <div
+              [...projects]
+                .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+                .map((p) => (
+                <motion.div
                   key={p.id}
+                  layout
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.2, ease: EASE }}
                   style={{
                     border: "1px solid #eee",
                     borderRadius: 8,
@@ -938,30 +1116,45 @@ export default function FacilitationBoard() {
                   onClick={() => setSelectedProject(p)}
                 >
                   <div>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>{p.title}</div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>
+                      {p.pinned && <span title="고정됨">📌 </span>}
+                      {p.title}
+                    </div>
                     <div style={{ fontSize: 12, color: "#999" }}>
                       {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmState({
-                        title: "프로젝트 삭제",
-                        message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
-                        confirmLabel: "삭제",
-                        onConfirm: () => {
-                          deleteProject(p.id);
-                          setConfirmState(null);
-                        },
-                      });
-                    }}
-                    style={{ border: "none", background: "rgba(0,0,0,0.06)", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
-                  >
-                    삭제
-                  </button>
-                </div>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePinProject(p.id);
+                      }}
+                      style={{ border: "none", background: p.pinned ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.06)", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
+                    >
+                      {p.pinned ? "고정 해제" : "고정"}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmState({
+                          title: "프로젝트 삭제",
+                          message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
+                          confirmLabel: "삭제",
+                          onConfirm: () => {
+                            deleteProject(p.id);
+                            setConfirmState(null);
+                          },
+                        });
+                      }}
+                      style={{ border: "none", background: "rgba(0,0,0,0.06)", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
+                    >
+                      삭제
+                    </button>
+                  </div>
+                </motion.div>
               ))}
+            </AnimatePresence>
           </div>
         </div>
         <ConfirmDialog
@@ -980,7 +1173,7 @@ export default function FacilitationBoard() {
   if (!name) {
     return (
       <div>
-        <TopBar onHome={backToProjects} />
+        <TopBar onProjects={backToProjects} />
         <div style={{ maxWidth: 420, margin: "40px auto", padding: 32, fontFamily: "sans-serif", textAlign: "center" }}>
           <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{selectedProject.title}</div>
           <div style={{ fontSize: 14, color: "#777", marginBottom: 24 }}>
@@ -995,7 +1188,7 @@ export default function FacilitationBoard() {
           />
           <button
             onClick={joinBoard}
-            style={{ width: "100%", padding: "10px 14px", fontSize: 15, borderRadius: 8, border: "none", background: "#2c2c2c", color: "white", cursor: "pointer" }}
+            style={{ width: "100%", padding: "10px 14px", fontSize: 15, borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer" }}
           >
             참여하기
           </button>
@@ -1006,6 +1199,7 @@ export default function FacilitationBoard() {
 
   const votesLeft = board.votesPerUser - myVoteCount(board);
   const problemNotesAll = board.notes.filter((n) => n.isProblem);
+  const parkedNotesAll = board.notes.filter((n) => n.isParked); // 보류함: 모든 의견 보드를 통틀어 보류된 항목
   const rankedProblems = [...problemNotesAll].sort(
     (a, b) => (board.votes[b.id]?.length || 0) - (board.votes[a.id]?.length || 0)
   );
@@ -1019,17 +1213,21 @@ export default function FacilitationBoard() {
     const iVoted = voters.includes(name);
     const voteDisabled = !iVoted && votesLeft <= 0;
     return (
-      <div
+      <motion.div
         key={note.id}
+        {...popIn}
         onClick={() => mergeMode && toggleSelect(note.id, note.topicId)}
         style={{
-          width: 220,
+          // 화면이 최대(900px 컨테이너 기준)일 때 한 줄에 정확히 4개가 놓이도록 너비를 비율로 계산
+          flex: "0 0 calc(25% - 9px)",
+          width: "calc(25% - 9px)",
+          minWidth: 150,
           maxWidth: "100%",
           background: noteColor.bg,
           color: noteColor.text,
           borderRadius: 6,
           boxShadow: isSel ? "0 0 0 2px #333" : "none",
-          border: note.isProblem ? "2px solid #d4537e" : "1px solid rgba(0,0,0,0.06)",
+          border: note.isProblem ? "2px solid #d4537e" : note.isParked ? "2px dashed #707070" : "1px solid rgba(0,0,0,0.06)",
           cursor: mergeMode ? "pointer" : "default",
           display: "flex",
           flexDirection: "column",
@@ -1048,6 +1246,7 @@ export default function FacilitationBoard() {
         >
           <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
             {note.isProblem && <span title="문제로 표시됨">📌</span>}
+            {note.isParked && <span title="보류됨">⏸</span>}
             {note.authors.join(", ")}
           </span>
           {!mergeMode && (
@@ -1117,25 +1316,47 @@ export default function FacilitationBoard() {
 
         {!mergeMode && (
           <div style={{ padding: "0 8px 8px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleProblem(note.id);
-              }}
-              title={note.isProblem ? "문제 표시 해제" : "문제로 표시"}
-              style={{
-                border: "none",
-                background: note.isProblem ? "#d4537e" : "rgba(0,0,0,0.12)",
-                color: note.isProblem ? "#fff" : noteColor.text,
-                borderRadius: 4,
-                fontSize: 10,
-                padding: "3px 8px",
-                cursor: "pointer",
-                fontWeight: 600,
-              }}
-            >
-              {note.isProblem ? "문제 해제" : "문제로"}
-            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleProblem(note.id);
+                }}
+                title={note.isProblem ? "문제 표시 해제" : "문제로 표시"}
+                style={{
+                  border: "none",
+                  background: note.isProblem ? "#d4537e" : "rgba(0,0,0,0.12)",
+                  color: note.isProblem ? "#fff" : noteColor.text,
+                  borderRadius: 4,
+                  fontSize: 10,
+                  padding: "3px 8px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                {note.isProblem ? "문제 해제" : "문제로"}
+              </button>
+              {/* 1번: 보류함. 문제로와 동일한 단일 플래그 패턴, 서로 동시에 될 수 없어 자동 배타 처리됨 */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleParked(note.id);
+                }}
+                title={note.isParked ? "보류 해제" : "나중에 다시 논의 (보류)"}
+                style={{
+                  border: "none",
+                  background: note.isParked ? "#707070" : "rgba(0,0,0,0.12)",
+                  color: note.isParked ? "#fff" : noteColor.text,
+                  borderRadius: 4,
+                  fontSize: 10,
+                  padding: "3px 8px",
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                {note.isParked ? "보류 해제" : "보류"}
+              </button>
+            </div>
             {/* 7번: 문제로 표시된 포스트잇에 바로 투표 */}
             {note.isProblem && (
               <button
@@ -1147,7 +1368,7 @@ export default function FacilitationBoard() {
                 title={voteDisabled ? "남은 투표권이 없습니다" : "투표"}
                 style={{
                   border: "none",
-                  background: iVoted ? "#2c2c2c" : "rgba(0,0,0,0.12)",
+                  background: iVoted ? "#242424" : "rgba(0,0,0,0.12)",
                   color: iVoted ? "#fff" : noteColor.text,
                   borderRadius: 999,
                   fontSize: 11,
@@ -1163,7 +1384,7 @@ export default function FacilitationBoard() {
             )}
           </div>
         )}
-      </div>
+      </motion.div>
     );
   };
 
@@ -1171,7 +1392,8 @@ export default function FacilitationBoard() {
   return (
     <div>
       <TopBar
-        onHome={backToProjects}
+        onProjects={backToProjects}
+        onSaveImage={downloadPhaseImage}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span
@@ -1197,9 +1419,8 @@ export default function FacilitationBoard() {
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[
               { key: "opinion", label: "의견 작성" },
-              { key: "problem", label: "문제 정리" },
+              { key: "problem", label: "문제 정리 및 부가 설명" },
               { key: "voting", label: "우선순위별 결과" },
-              { key: "document", label: "문서" },
             ].map((tab) => (
               <button
                 key={tab.key}
@@ -1208,7 +1429,7 @@ export default function FacilitationBoard() {
                   padding: "6px 14px",
                   borderRadius: 999,
                   border: "1px solid #ddd",
-                  background: board.phase === tab.key ? "#2c2c2c" : "white",
+                  background: board.phase === tab.key ? "#242424" : "white",
                   color: board.phase === tab.key ? "white" : "#333",
                   fontSize: 13,
                   cursor: "pointer",
@@ -1218,19 +1439,28 @@ export default function FacilitationBoard() {
               </button>
             ))}
             <button
-              data-guide="save-image"
-              onClick={downloadSummaryImage}
-              style={{ padding: "6px 14px", borderRadius: 999, border: "1px solid #ddd", background: "white", color: "#333", fontSize: 13, cursor: "pointer" }}
+              onClick={() => setPhase("document")}
+              style={{
+                padding: "6px 14px",
+                borderRadius: 999,
+                border: "1px solid #ddd",
+                background: board.phase === "document" ? "#242424" : "white",
+                color: board.phase === "document" ? "white" : "#333",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
             >
-              이미지로 저장
+              문서
             </button>
           </div>
         </div>
 
+        <div ref={phaseContentRef} style={{ position: "relative", background: "#fff" }}>
+        <AnimatePresence initial={false}>
         {board.phase === "opinion" && (
-          <div>
+          <motion.div key="opinion" {...fadeSlide}>
             {/* 안내 문구 배너: 글자 수에 맞춰 세로 길이가 자동으로 늘어나 잘리거나 스크롤이 생기지 않는다 */}
-            <div style={{ background: "#242322", color: "#f2f1ec", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
+            <div style={{ background: "#242424", color: "#f2f2f2", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
               <textarea
                 defaultValue={board.instructions}
                 ref={(el) => autoResizeTextarea(el)}
@@ -1249,7 +1479,7 @@ export default function FacilitationBoard() {
                   outline: "none",
                   resize: "none",
                   overflow: "hidden",
-                  color: "#f2f1ec",
+                  color: "#f2f2f2",
                   fontSize: 13,
                   lineHeight: 1.6,
                   fontFamily: "sans-serif",
@@ -1257,6 +1487,20 @@ export default function FacilitationBoard() {
                 }}
               />
             </div>
+
+            {/* 2번: 프로젝트 목표 한 줄 고정. goal이 없으면 영역 자체를 표시하지 않는다.
+                인라인 편집은 주제 이름 수정(renameTopic)과 같은 패턴: onBlur에 값을 반영, 비우면 이전 값 유지 */}
+            {selectedProject.goal && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, fontSize: 13, color: "#333" }}>
+                <span style={{ flexShrink: 0 }}>🎯 목표:</span>
+                <input
+                  key={selectedProject.goal}
+                  defaultValue={selectedProject.goal}
+                  onBlur={(e) => updateProjectGoal(e.target.value.trim() || selectedProject.goal)}
+                  style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontWeight: 600, color: "#333", minWidth: 0, fontFamily: "sans-serif", fontSize: 13 }}
+                />
+              </div>
+            )}
 
             {/* 참여자 색상 범례 */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
@@ -1278,8 +1522,8 @@ export default function FacilitationBoard() {
                 alignItems: "center",
                 gap: 8,
                 flexWrap: "wrap",
-                background: "#f3f0ea",
-                border: "1px solid #e8e6df",
+                background: "#eeeeee",
+                border: "1px solid #e0e0e0",
                 borderRadius: 8,
                 padding: "8px 12px",
                 marginBottom: 14,
@@ -1310,7 +1554,7 @@ export default function FacilitationBoard() {
                   padding: "8px 16px",
                   borderRadius: 8,
                   border: "1px solid #ddd",
-                  background: mergeMode ? "#2c2c2c" : "white",
+                  background: mergeMode ? "#242424" : "white",
                   color: mergeMode ? "white" : "#333",
                   cursor: "pointer",
                   fontSize: 13,
@@ -1324,7 +1568,7 @@ export default function FacilitationBoard() {
                   {selected.length >= 2 && (
                     <button
                       onClick={mergeSelected}
-                      style={{ marginLeft: 10, padding: "4px 12px", borderRadius: 6, border: "none", background: "#2c2c2c", color: "white", cursor: "pointer", fontSize: 12 }}
+                      style={{ marginLeft: 10, padding: "4px 12px", borderRadius: 6, border: "none", background: "#242424", color: "white", cursor: "pointer", fontSize: 12 }}
                     >
                       선택한 포스트잇 병합
                     </button>
@@ -1340,10 +1584,18 @@ export default function FacilitationBoard() {
               {board.topics.map((topic, topicIdx) => {
                 const topicNotes = board.notes.filter((n) => n.topicId === topic.id);
                 const problemNotes = topicNotes.filter((n) => n.isProblem); // 6번: 상단 고정
-                const normalNotes = topicNotes.filter((n) => !n.isProblem);
+                const plainNotes = topicNotes.filter((n) => !n.isProblem && !n.isParked);
+                // 보류된 포스트잇은 문제 섹션과 동일한 패턴으로, 일반 포스트잇 아래에 별도 구획으로 묶어 보여준다
+                const parkedNotes = topicNotes.filter((n) => !n.isProblem && n.isParked);
                 const canDelete = board.topics.length > 1;
                 return (
-                  <div key={topic.id} style={{ width: "100%" }}>
+                  <div
+                    key={topic.id}
+                    ref={(el) => {
+                      topicRefs.current[topic.id] = el;
+                    }}
+                    style={{ width: "100%" }}
+                  >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 8 }}>
                       <input
                         defaultValue={topic.title}
@@ -1355,7 +1607,7 @@ export default function FacilitationBoard() {
                         {canDelete && (
                           <button
                             onClick={() => requestDeleteTopic(topic)}
-                            title={problemNotes.length + normalNotes.length === 0 ? "빈 보드 삭제" : "보드 삭제"}
+                            title={problemNotes.length + plainNotes.length + parkedNotes.length === 0 ? "빈 보드 삭제" : "보드 삭제"}
                             style={{ border: "1px solid #eee", background: "#fff", color: "#999", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}
                           >
                             보드 삭제
@@ -1378,7 +1630,7 @@ export default function FacilitationBoard() {
                         flexDirection: "column",
                         gap: 14,
                         background: "#ffffff",
-                        border: "1px solid #e8e6df",
+                        border: "1px solid #e0e0e0",
                         borderRadius: 10,
                         padding: 14,
                         overflowX: "hidden",
@@ -1388,12 +1640,25 @@ export default function FacilitationBoard() {
                       {problemNotes.length > 0 && (
                         <div>
                           <div style={{ fontSize: 11, fontWeight: 700, color: "#c0392b", marginBottom: 8 }}>📌 문제로 표시된 의견</div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{problemNotes.map(renderNoteCard)}</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                            <AnimatePresence mode="popLayout">{problemNotes.map(renderNoteCard)}</AnimatePresence>
+                          </div>
                         </div>
                       )}
                       {/* 5번: 일반 포스트잇은 flex-wrap으로 좌->우 채우고 줄바꿈 (가로 스크롤 없음) */}
-                      {normalNotes.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{normalNotes.map(renderNoteCard)}</div>
+                      {plainNotes.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                          <AnimatePresence mode="popLayout">{plainNotes.map(renderNoteCard)}</AnimatePresence>
+                        </div>
+                      )}
+                      {/* 1번: 보류된 포스트잇은 문제 섹션과 동일하게, 일반 포스트잇 아래에 별도 구획으로 고정 */}
+                      {parkedNotes.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: "#888888", marginBottom: 8 }}>⏸ 보류된 의견</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                            <AnimatePresence mode="popLayout">{parkedNotes.map(renderNoteCard)}</AnimatePresence>
+                          </div>
+                        </div>
                       )}
                       {topicNotes.length === 0 && (
                         <div style={{ color: "#bbb", fontSize: 13, padding: 6 }}>아직 포스트잇이 없습니다.</div>
@@ -1403,41 +1668,187 @@ export default function FacilitationBoard() {
                 );
               })}
             </div>
-          </div>
+
+            {/* 1번: 보류함. 원래 보드 자리에는 그대로 남기고(위 parkedNotes 구획에 포함), 전체 프로젝트 기준으로 모아 보여주는 접이식 섹션 */}
+            <div style={{ marginTop: 20 }}>
+              <button
+                onClick={() => setParkingOpen((v) => !v)}
+                style={{
+                  width: "100%",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "10px 14px",
+                  borderRadius: parkingOpen ? "10px 10px 0 0" : 10,
+                  border: "1px solid #e0e0e0",
+                  background: "#eeeeee",
+                  color: "#555555",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span>⏸ 보류함 ({parkedNotesAll.length})</span>
+                <span>{parkingOpen ? "▲" : "▼"}</span>
+              </button>
+              <AnimatePresence>
+              {parkingOpen && (
+                <motion.div
+                  key="parking-content"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.22, ease: EASE }}
+                  style={{
+                    border: "1px solid #e0e0e0",
+                    borderTop: "none",
+                    borderRadius: "0 0 10px 10px",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {parkedNotesAll.length === 0 && (
+                    <div style={{ color: "#bbb", fontSize: 13, padding: 4 }}>보류된 의견이 없습니다.</div>
+                  )}
+                  <AnimatePresence mode="popLayout">
+                  {parkedNotesAll.map((n) => {
+                    const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
+                    return (
+                      <motion.div
+                        key={n.id}
+                        {...popIn}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          background: "#fff",
+                          border: "1px dashed #bdbdbd",
+                        }}
+                      >
+                        <div
+                          onClick={() => scrollToTopic(n.topicId)}
+                          title="원래 의견 보드로 이동"
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, cursor: "pointer" }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 11, color: "#888888", marginBottom: 2 }}>⏸ {topicTitle}</div>
+                            <div style={{ fontSize: 13, color: "#444", wordBreak: "break-word" }}>
+                              {n.text || <span style={{ color: "#bbb" }}>(빈 포스트잇)</span>}
+                            </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleParked(n.id);
+                            }}
+                            style={{
+                              border: "none",
+                              background: "rgba(0,0,0,0.08)",
+                              color: "#666",
+                              borderRadius: 6,
+                              fontSize: 11,
+                              padding: "5px 10px",
+                              cursor: "pointer",
+                              flexShrink: 0,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            의견으로 되돌리기
+                          </button>
+                        </div>
+                        {/* 보류된 이유: "문제" 설명과 동일하게 note.description을 재사용 (문제/보류는 동시에 될 수 없어 의미가 겹치지 않음) */}
+                        <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                          <span style={{ fontSize: 11, color: "#888888", flexShrink: 0, marginTop: 6 }}>이유 :</span>
+                          <textarea
+                            value={n.description || ""}
+                            ref={(el) => autoResizeTextarea(el)}
+                            onChange={(e) => {
+                              editNoteDescriptionLocal(n.id, e.target.value);
+                              autoResizeTextarea(e.target);
+                            }}
+                            onFocus={() => {
+                              suspendPollRef.current = true;
+                            }}
+                            onBlur={() => {
+                              suspendPollRef.current = false;
+                              commitNoteDescription(n.id);
+                            }}
+                            placeholder="보류된 이유를 입력하세요"
+                            style={{ flex: 1, border: "none", background: "transparent", resize: "none", overflow: "hidden", fontSize: 13, fontFamily: "sans-serif", outline: "none", minHeight: 32 }}
+                          />
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                  </AnimatePresence>
+                  </div>
+                </motion.div>
+              )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
         )}
 
         {board.phase === "problem" && (
-          <div>
-            <div data-guide="problem-area" style={{ fontSize: 13, color: "#666", marginBottom: 16, background: "#f3f0ea", border: "1px solid #e8e6df", borderRadius: 8, padding: "10px 12px" }}>
+          <motion.div key="problem" {...fadeSlide}>
+            <div data-guide="problem-area" style={{ fontSize: 13, color: "#666", marginBottom: 16, background: "#eeeeee", border: "1px solid #e0e0e0", borderRadius: 8, padding: "10px 12px" }}>
               여러 의견 보드에서 <b>"문제로"</b> 표시된 포스트잇을 한곳에 모았습니다. 여기서 문구를 다듬으면 원래 보드의 포스트잇도 함께 바뀝니다.
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {problemNotesAll.map((n) => {
                 const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
                 return (
-                  <div key={n.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "flex", gap: 8, alignItems: "flex-start", background: "#fff" }}>
-                    <span style={{ fontSize: 11, color: "#b0623a", flexShrink: 0, marginTop: 6 }} title="원래 의견 보드">
-                      📌 {topicTitle}
-                    </span>
-                    <textarea
-                      value={n.text}
-                      onChange={(e) => editNoteTextLocal(n.id, e.target.value)}
-                      onFocus={() => {
-                        suspendPollRef.current = true;
-                      }}
-                      onBlur={() => {
-                        suspendPollRef.current = false;
-                        commitNoteText(n.id);
-                      }}
-                      style={{ flex: 1, border: "none", resize: "vertical", fontSize: 14, fontFamily: "sans-serif", outline: "none", minHeight: 40 }}
-                    />
-                    <button
-                      onClick={() => toggleProblem(n.id)}
-                      title="문제 표시 해제 (포스트잇은 유지)"
-                      style={{ border: "1px solid #eee", background: "#fff", color: "#999", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer", flexShrink: 0 }}
-                    >
-                      문제 해제
-                    </button>
+                  <div key={n.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8, background: "#fff" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{ fontSize: 11, color: "#c0392b", flexShrink: 0, marginTop: 6 }} title="원래 의견 보드">
+                        📌 {topicTitle}
+                      </span>
+                      <textarea
+                        value={n.text}
+                        ref={(el) => autoResizeTextarea(el)}
+                        onChange={(e) => {
+                          editNoteTextLocal(n.id, e.target.value);
+                          autoResizeTextarea(e.target);
+                        }}
+                        onFocus={() => {
+                          suspendPollRef.current = true;
+                        }}
+                        onBlur={() => {
+                          suspendPollRef.current = false;
+                          commitNoteText(n.id);
+                        }}
+                        style={{ flex: 1, border: "none", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "sans-serif", outline: "none", minHeight: 40 }}
+                      />
+                      <button
+                        onClick={() => toggleProblem(n.id)}
+                        title="문제 표시 해제 (포스트잇은 유지)"
+                        style={{ border: "1px solid #eee", background: "#fff", color: "#999", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer", flexShrink: 0 }}
+                      >
+                        문제 해제
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{ fontSize: 11, color: "#999", flexShrink: 0, marginTop: 6 }}>설명 :</span>
+                      <textarea
+                        value={n.description || ""}
+                        ref={(el) => autoResizeTextarea(el)}
+                        onChange={(e) => {
+                          editNoteDescriptionLocal(n.id, e.target.value);
+                          autoResizeTextarea(e.target);
+                        }}
+                        onFocus={() => {
+                          suspendPollRef.current = true;
+                        }}
+                        onBlur={() => {
+                          suspendPollRef.current = false;
+                          commitNoteDescription(n.id);
+                        }}
+                        placeholder="문제에 대한 짧은 설명을 입력하세요"
+                        style={{ flex: 1, border: "none", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "sans-serif", outline: "none", minHeight: 40 }}
+                      />
+                    </div>
                   </div>
                 );
               })}
@@ -1445,11 +1856,11 @@ export default function FacilitationBoard() {
             {problemNotesAll.length === 0 && (
               <div style={{ color: "#aaa", fontSize: 14 }}>의견 작성 탭에서 포스트잇을 "문제로" 표시하면 여기 모입니다.</div>
             )}
-          </div>
+          </motion.div>
         )}
 
         {board.phase === "voting" && (
-          <div>
+          <motion.div key="voting" {...fadeSlide}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, fontSize: 13, color: "#666", flexWrap: "wrap", gap: 8 }}>
               <div>득표수가 많은 순으로 정렬된 결과입니다 (읽기 전용). 투표는 "의견 작성" 탭에서 합니다.</div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -1487,145 +1898,218 @@ export default function FacilitationBoard() {
             {rankedProblems.length === 0 && (
               <div style={{ color: "#aaa", fontSize: 14 }}>의견 작성 탭에서 포스트잇을 "문제로" 표시하고 투표하면 여기 순위가 나타납니다.</div>
             )}
-          </div>
+          </motion.div>
         )}
 
         {board.phase === "document" && (
-          <div>
+          <motion.div key="document" {...fadeSlide}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-              <div style={{ fontSize: 13, color: "#666" }}>진행 과정과 결과를 표로 정리한 문서입니다.</div>
-              <button
-                onClick={downloadDoc}
-                style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#2c2c2c", color: "white", cursor: "pointer", fontSize: 13 }}
-              >
-                문서 다운로드 (HTML)
-              </button>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  data-guide="doc-type-process"
+                  onClick={() => setDocType("process")}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 999,
+                    border: "1px solid #ddd",
+                    background: docType === "process" ? "#242424" : "white",
+                    color: docType === "process" ? "white" : "#333",
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  과정 문서
+                </button>
+                <button
+                  data-guide="doc-type-result"
+                  onClick={() => setDocType("result")}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 999,
+                    border: "1px solid #ddd",
+                    background: docType === "result" ? "#242424" : "white",
+                    color: docType === "result" ? "white" : "#333",
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  결과 문서(문제 우선순위 TOP 5)
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  onClick={() => downloadDoc(docType)}
+                  style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer", fontSize: 13 }}
+                >
+                  문서 다운로드 (HTML)
+                </button>
+                <button
+                  onClick={() => downloadDocMarkdown(docType)}
+                  style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #242424", background: "white", color: "#242424", cursor: "pointer", fontSize: 13 }}
+                >
+                  문서 다운로드 (Markdown)
+                </button>
+                <button
+                  onClick={downloadDocImage}
+                  style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #242424", background: "white", color: "#242424", cursor: "pointer", fontSize: 13 }}
+                >
+                  이미지로 저장
+                </button>
+              </div>
+            </div>
+            <div ref={docContentRef} style={{ background: "#fff" }}>
+            <div style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
+              {docType === "process" ? "의견 작성부터 문제 정리까지의 진행 과정을 표로 정리한 문서입니다." : "우선순위 TOP 5 결과만 표로 정리한 문서입니다."}
             </div>
 
-            <DocSection title="1. 개요">
-              <DocTable>
-                <tbody>
-                  <DocKV k="프로젝트명" v={selectedProject.title} />
-                  <DocKV k="참여자 수" v={`${docModel.participants.length}명`} />
-                  <DocKV k="작성된 의견 수" v={`${board.notes.length}개`} />
-                  <DocKV k="문제로 표시된 의견 수" v={`${docModel.problemNotes.length}개`} />
-                  <DocKV k="최다 득표" v={docModel.ranked[0] ? `${docModel.ranked[0].text} (${docModel.ranked[0].votes}표)` : "—"} />
-                </tbody>
-              </DocTable>
-            </DocSection>
+            {docType === "process" ? (
+              <>
+                <DocSection title="1. 개요">
+                  <DocTable>
+                    <tbody>
+                      <DocKV k="프로젝트명" v={selectedProject.title} />
+                      <DocKV k="참여자 수" v={`${docModel.participants.length}명`} />
+                      <DocKV k="작성된 의견 수" v={`${board.notes.length}개`} />
+                      <DocKV k="문제로 표시된 의견 수" v={`${docModel.problemNotes.length}개`} />
+                    </tbody>
+                  </DocTable>
+                </DocSection>
 
-            <DocSection title="2. 참여자">
-              <DocTable>
-                <thead>
-                  <tr>
-                    <DocTh>이름</DocTh>
-                    <DocTh>배정 색상</DocTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {docModel.participants.length ? (
-                    docModel.participants.map((p) => (
-                      <tr key={p.name}>
-                        <DocTd>{p.name}</DocTd>
-                        <DocTd>
-                          <span style={{ background: p.color.bg, color: p.color.text, border: `1px solid ${p.color.border}`, borderRadius: 6, padding: "2px 10px", fontSize: 12, fontWeight: 600 }}>
-                            {p.color.name}
-                          </span>
-                        </DocTd>
+                <DocSection title="2. 참여자">
+                  <DocTable>
+                    <thead>
+                      <tr>
+                        <DocTh>이름</DocTh>
+                        <DocTh>배정 색상</DocTh>
                       </tr>
-                    ))
-                  ) : (
-                    <DocEmpty span={2}>참여자가 없습니다.</DocEmpty>
-                  )}
-                </tbody>
-              </DocTable>
-            </DocSection>
+                    </thead>
+                    <tbody>
+                      {docModel.participants.length ? (
+                        docModel.participants.map((p) => (
+                          <tr key={p.name}>
+                            <DocTd>{p.name}</DocTd>
+                            <DocTd>
+                              <span style={{ background: p.color.bg, color: p.color.text, border: `1px solid ${p.color.border}`, borderRadius: 6, padding: "2px 10px", fontSize: 12, fontWeight: 600 }}>
+                                {p.color.name}
+                              </span>
+                            </DocTd>
+                          </tr>
+                        ))
+                      ) : (
+                        <DocEmpty span={2}>참여자가 없습니다.</DocEmpty>
+                      )}
+                    </tbody>
+                  </DocTable>
+                </DocSection>
 
-            <DocSection title="3. 의견 모음 (과정)">
-              <DocTable>
-                <thead>
-                  <tr>
-                    <DocTh>주제</DocTh>
-                    <DocTh>내용</DocTh>
-                    <DocTh>작성자</DocTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {board.notes.length ? (
-                    docModel.notesByTopic.flatMap((t) =>
-                      t.notes.map((n) => (
-                        <tr key={n.id}>
-                          <DocTd>{t.title}</DocTd>
-                          <DocTd>
-                            {n.text || <span style={{ color: "#aaa" }}>(빈 포스트잇)</span>}
-                            {n.isProblem && (
-                              <span style={{ marginLeft: 6, background: "#fdecec", color: "#c0392b", border: "1px solid #eab5b0", borderRadius: 6, padding: "1px 7px", fontSize: 11, fontWeight: 600 }}>문제</span>
-                            )}
-                          </DocTd>
-                          <DocTd>{n.authors.join(", ")}</DocTd>
-                        </tr>
-                      ))
-                    )
-                  ) : (
-                    <DocEmpty span={3}>작성된 의견이 없습니다.</DocEmpty>
-                  )}
-                </tbody>
-              </DocTable>
-            </DocSection>
-
-            <DocSection title="4. 문제로 표시된 의견">
-              <DocTable>
-                <thead>
-                  <tr>
-                    <DocTh>#</DocTh>
-                    <DocTh>문제</DocTh>
-                    <DocTh>작성자</DocTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {docModel.problemNotes.length ? (
-                    docModel.problemNotes.map((n, i) => (
-                      <tr key={n.id}>
-                        <DocTd>{i + 1}</DocTd>
-                        <DocTd>{n.text}</DocTd>
-                        <DocTd>{n.authors.join(", ")}</DocTd>
+                <DocSection title="3. 의견 모음 (과정)">
+                  <DocTable>
+                    <thead>
+                      <tr>
+                        <DocTh>주제</DocTh>
+                        <DocTh>내용</DocTh>
+                        <DocTh>작성자</DocTh>
                       </tr>
-                    ))
-                  ) : (
-                    <DocEmpty span={3}>문제로 표시된 의견이 없습니다.</DocEmpty>
-                  )}
-                </tbody>
-              </DocTable>
-            </DocSection>
+                    </thead>
+                    <tbody>
+                      {board.notes.length ? (
+                        docModel.notesByTopic.flatMap((t) =>
+                          t.notes.map((n) => (
+                            <tr key={n.id}>
+                              <DocTd>{t.title}</DocTd>
+                              <DocTd>
+                                {n.text || <span style={{ color: "#aaa" }}>(빈 포스트잇)</span>}
+                                {n.isProblem && (
+                                  <span style={{ marginLeft: 6, background: "#fdecec", color: "#c0392b", border: "1px solid #eab5b0", borderRadius: 6, padding: "1px 7px", fontSize: 11, fontWeight: 600 }}>문제</span>
+                                )}
+                              </DocTd>
+                              <DocTd>{n.authors.join(", ")}</DocTd>
+                            </tr>
+                          ))
+                        )
+                      ) : (
+                        <DocEmpty span={3}>작성된 의견이 없습니다.</DocEmpty>
+                      )}
+                    </tbody>
+                  </DocTable>
+                </DocSection>
 
-            <DocSection title="5. 우선순위별 결과">
-              <DocTable>
-                <thead>
-                  <tr>
-                    <DocTh>순위</DocTh>
-                    <DocTh>문제</DocTh>
-                    <DocTh>득표</DocTh>
-                    <DocTh>투표자</DocTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {docModel.ranked.length ? (
-                    docModel.ranked.map((p, i) => (
-                      <tr key={p.id} style={i === 0 ? { background: "#fdf3f7" } : undefined}>
-                        <DocTd>{i + 1}</DocTd>
-                        <DocTd>{p.text}</DocTd>
-                        <DocTd>{p.votes}표</DocTd>
-                        <DocTd>{p.voters.join(", ") || "—"}</DocTd>
+                <DocSection title="4. 문제 정리 및 부가 설명">
+                  <DocTable>
+                    <thead>
+                      <tr>
+                        <DocTh>#</DocTh>
+                        <DocTh>문제</DocTh>
+                        <DocTh>작성자</DocTh>
                       </tr>
-                    ))
-                  ) : (
-                    <DocEmpty span={4}>결과가 없습니다.</DocEmpty>
-                  )}
-                </tbody>
-              </DocTable>
-            </DocSection>
-          </div>
+                    </thead>
+                    <tbody>
+                      {docModel.problemNotes.length ? (
+                        docModel.problemNotes.map((n, i) => (
+                          <tr key={n.id}>
+                            <DocTd>{i + 1}</DocTd>
+                            <DocTd>
+                              {n.text}
+                              {n.description && <div style={{ color: "#888", fontSize: 12.5, marginTop: 3 }}>설명: {n.description}</div>}
+                            </DocTd>
+                            <DocTd>{n.authors.join(", ")}</DocTd>
+                          </tr>
+                        ))
+                      ) : (
+                        <DocEmpty span={3}>문제로 표시된 의견이 없습니다.</DocEmpty>
+                      )}
+                    </tbody>
+                  </DocTable>
+                </DocSection>
+              </>
+            ) : (
+              <>
+                <DocSection title="1. 개요">
+                  <DocTable>
+                    <tbody>
+                      <DocKV k="프로젝트명" v={selectedProject.title} />
+                      <DocKV k="문제로 표시된 의견 수" v={`${docModel.problemNotes.length}개`} />
+                      <DocKV k="최다 득표" v={docModel.ranked[0] ? `${docModel.ranked[0].text} (${docModel.ranked[0].votes}표)` : "—"} />
+                    </tbody>
+                  </DocTable>
+                </DocSection>
+
+                <DocSection title="2. 우선순위 TOP 5 결과">
+                  <DocTable>
+                    <thead>
+                      <tr>
+                        <DocTh>순위</DocTh>
+                        <DocTh>문제</DocTh>
+                        <DocTh>득표</DocTh>
+                        <DocTh>투표자</DocTh>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {docModel.topRanked.length ? (
+                        docModel.topRanked.map((p, i) => (
+                          <tr key={p.id} style={i === 0 ? { background: "#fdf3f7" } : undefined}>
+                            <DocTd>{i + 1}</DocTd>
+                            <DocTd>
+                              {p.text}
+                              {p.description && <div style={{ color: "#888", fontSize: 12.5, marginTop: 3 }}>설명: {p.description}</div>}
+                            </DocTd>
+                            <DocTd>{p.votes}표</DocTd>
+                            <DocTd>{p.voters.join(", ") || "—"}</DocTd>
+                          </tr>
+                        ))
+                      ) : (
+                        <DocEmpty span={4}>결과가 없습니다.</DocEmpty>
+                      )}
+                    </tbody>
+                  </DocTable>
+                </DocSection>
+              </>
+            )}
+            </div>
+          </motion.div>
         )}
+        </AnimatePresence>
+        </div>
       </div>
 
       <GuideCoach phase={board.phase} onGotoScreen={setPhase} />
@@ -1654,15 +2138,15 @@ function DocTable({ children }) {
   return <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>{children}</table>;
 }
 function DocTh({ children }) {
-  return <th style={{ border: "1px solid #e8e6df", padding: "9px 12px", textAlign: "left", background: "#f5f2ec", fontWeight: 700 }}>{children}</th>;
+  return <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#e9e9e9", fontWeight: 700 }}>{children}</th>;
 }
 function DocTd({ children }) {
-  return <td style={{ border: "1px solid #e8e6df", padding: "9px 12px", textAlign: "left", verticalAlign: "top" }}>{children}</td>;
+  return <td style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", verticalAlign: "top" }}>{children}</td>;
 }
 function DocKV({ k, v }) {
   return (
     <tr>
-      <th style={{ border: "1px solid #e8e6df", padding: "9px 12px", textAlign: "left", background: "#faf9f6", width: 160, whiteSpace: "nowrap" }}>{k}</th>
+      <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#f2f2f2", width: 160, whiteSpace: "nowrap" }}>{k}</th>
       <DocTd>{v}</DocTd>
     </tr>
   );
@@ -1670,7 +2154,7 @@ function DocKV({ k, v }) {
 function DocEmpty({ span, children }) {
   return (
     <tr>
-      <td colSpan={span} style={{ border: "1px solid #e8e6df", padding: "9px 12px", color: "#aaa" }}>
+      <td colSpan={span} style={{ border: "1px solid #e0e0e0", padding: "9px 12px", color: "#aaa" }}>
         {children}
       </td>
     </tr>

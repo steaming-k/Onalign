@@ -7,7 +7,17 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: #fbfaf7;
-  color: #1f1e1d;
+  background: #ffffff;
+  color: #202020;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 화면 전반의 딱딱 끊기는 느낌을 줄이기 위한 공통 트랜지션.
+   새로 추가하는 버튼/입력도 별도 스타일 없이 이 규칙을 그대로 물려받는다. */
+button, input, textarea, select {
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.15s ease,
+    border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.96);
 }

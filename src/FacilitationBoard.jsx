@@ -438,6 +438,24 @@ function GuideCoach({ phase, onGotoScreen }) {
     if (active && active.screen !== phase) onGotoScreen(active.screen);
   }, [active, phase, onGotoScreen]);
 
+  // 새 단계로 넘어가면 대상 요소가 화면 밖(스크롤 아래/위)에 있어도 항상 보이도록 화면 중앙으로 스크롤한다.
+  // 이게 없으면 대상이 접힌 화면 밖에 있을 때 하이라이트/말풍선이 화면 밖에 그려져 "위치가 안 맞고 안 보이는" 문제가 생긴다.
+  // (헤더에 고정된 대상처럼 이미 다 보이는 요소는 스크롤하지 않는다)
+  useEffect(() => {
+    if (!active || active.screen !== phase) return;
+    // 화면 전환/재렌더 직후 요소가 DOM에 잡히도록 약간 지연
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-guide="${active.target}"]`);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      // 헤더에 고정된 대상(save-image)은 위쪽에 있어도 정상이므로 헤더 높이만큼의 여백을 요구하지 않는다.
+      const topClear = active.target === "save-image" ? 0 : 66;
+      const fullyVisible = r.top >= topClear && r.bottom <= window.innerHeight - 12;
+      if (!fullyVisible) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [step, active, phase]);
+
   // 대상 요소 위치 추적 (스크롤·레이아웃 변동·늦은 렌더 대응). 변화가 있을 때만 상태 갱신.
   useEffect(() => {
     if (!active || active.screen !== phase) {
@@ -459,7 +477,7 @@ function GuideCoach({ phase, onGotoScreen }) {
       );
     };
     update();
-    const iv = setInterval(update, 200);
+    const iv = setInterval(update, 100);
     window.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
     return () => {

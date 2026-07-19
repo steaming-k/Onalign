@@ -27,13 +27,15 @@ const popIn = {
 // "이미지로 저장" 파일명에 쓰는 탭별 한글 라벨
 const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", document: "문서" };
 
+// 참여자 구분용 6색 파스텔. bg = 포스트잇/색상 점, tint = 참여자 배지의 옅은 배경,
+// text = 포스트잇 위 본문(따뜻한 차콜 통일), border = 색상 점 테두리/보더용.
 const PALETTE = [
-  { name: "pink", bg: "#ffd3e6", border: "#ff8fbf", text: "#8a1f56" },
-  { name: "olive", bg: "#e3f2c1", border: "#a3d977", text: "#3c6b1f" },
-  { name: "blue", bg: "#c7e6ff", border: "#7ab8f5", text: "#1a4a80" },
-  { name: "purple", bg: "#e6d9ff", border: "#b899f2", text: "#5b2f8a" },
-  { name: "tan", bg: "#ffe1b0", border: "#ffbc5c", text: "#8a5416" },
-  { name: "teal", bg: "#b8f2e2", border: "#5cd6b3", text: "#146b53" },
+  { name: "pink", bg: "#f7d3de", tint: "#fdeef2", border: "#e9a8bd", text: "#242322" },
+  { name: "blue", bg: "#bcd9ee", tint: "#e9f2fa", border: "#8fb9dd", text: "#242322" },
+  { name: "olive", bg: "#dde3ba", tint: "#f2f4e6", border: "#b7c088", text: "#242322" },
+  { name: "purple", bg: "#d6c9ee", tint: "#f0ebfa", border: "#b09fd9", text: "#242322" },
+  { name: "tan", bg: "#eecd9c", tint: "#faf1e2", border: "#dcae6b", text: "#242322" },
+  { name: "teal", bg: "#a9e6d3", tint: "#e6f7f1", border: "#72c9ac", text: "#242322" },
 ];
 
 // 프로젝트 목록은 하나의 인덱스 키로 관리하고, 각 프로젝트의 실제 보드 내용은
@@ -425,6 +427,9 @@ function GuideCoach({ phase, onGotoScreen }) {
   // 세션당 1회: 이번 세션에 이미 봤으면 -1(비활성)로 시작
   const [step, setStep] = useState(() => (guideDoneThisSession() ? -1 : 0));
   const [rect, setRect] = useState(null);
+  // 말풍선 실측 크기(화면이 좁아 텍스트가 더 꺾이면 높이가 달라짐) - 화면 밖으로 나가지 않도록 클램프할 때 사용
+  const bubbleRef = useRef(null);
+  const [bubbleSize, setBubbleSize] = useState({ width: 250, height: 120 });
 
   const active = step >= 0 && step < TOUR_STEPS.length ? TOUR_STEPS[step] : null;
 
@@ -432,6 +437,24 @@ function GuideCoach({ phase, onGotoScreen }) {
   useEffect(() => {
     if (active && active.screen !== phase) onGotoScreen(active.screen);
   }, [active, phase, onGotoScreen]);
+
+  // 새 단계로 넘어가면 대상 요소가 화면 밖(스크롤 아래/위)에 있어도 항상 보이도록 화면 중앙으로 스크롤한다.
+  // 이게 없으면 대상이 접힌 화면 밖에 있을 때 하이라이트/말풍선이 화면 밖에 그려져 "위치가 안 맞고 안 보이는" 문제가 생긴다.
+  // (헤더에 고정된 대상처럼 이미 다 보이는 요소는 스크롤하지 않는다)
+  useEffect(() => {
+    if (!active || active.screen !== phase) return;
+    // 화면 전환/재렌더 직후 요소가 DOM에 잡히도록 약간 지연
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-guide="${active.target}"]`);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      // 헤더에 고정된 대상(save-image)은 위쪽에 있어도 정상이므로 헤더 높이만큼의 여백을 요구하지 않는다.
+      const topClear = active.target === "save-image" ? 0 : 66;
+      const fullyVisible = r.top >= topClear && r.bottom <= window.innerHeight - 12;
+      if (!fullyVisible) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [step, active, phase]);
 
   // 대상 요소 위치 추적 (스크롤·레이아웃 변동·늦은 렌더 대응). 변화가 있을 때만 상태 갱신.
   useEffect(() => {
@@ -454,7 +477,7 @@ function GuideCoach({ phase, onGotoScreen }) {
       );
     };
     update();
-    const iv = setInterval(update, 200);
+    const iv = setInterval(update, 100);
     window.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
     return () => {
@@ -463,6 +486,19 @@ function GuideCoach({ phase, onGotoScreen }) {
       window.removeEventListener("resize", update);
     };
   }, [active, phase]);
+
+  // 말풍선 실제 렌더 크기를 측정해둔다 (창 크기가 좁아지면 폭이 줄고 줄바꿈으로 높이가 늘어남 -> 화면 밖으로 못 나가게 이 값으로 위치를 클램프한다)
+  useEffect(() => {
+    const measure = () => {
+      if (bubbleRef.current) {
+        const r = bubbleRef.current.getBoundingClientRect();
+        setBubbleSize({ width: r.width, height: r.height });
+      }
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [step, rect]);
 
   const endTour = () => {
     try {
@@ -484,8 +520,26 @@ function GuideCoach({ phase, onGotoScreen }) {
 
   if (!active || !rect || active.screen !== phase) return null;
 
-  const below = rect.bottom + 150 < window.innerHeight;
-  const centerX = Math.min(Math.max(rect.left + rect.width / 2, 140), window.innerWidth - 140);
+  // 화면이 좁아져도 말풍선이 밖으로 나가지 않도록: 폭은 뷰포트에 맞춰 줄이고,
+  // 위치는 실측 크기(bubbleSize) 기준으로 좌우/상하 여백 안쪽으로 클램프한다.
+  const margin = 12;
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+  const bubbleWidth = Math.min(250, viewportW - margin * 2);
+  const bubbleHeight = bubbleSize.height || 120;
+
+  const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
+  const left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
+
+  const spaceBelow = viewportH - rect.bottom;
+  const spaceAbove = rect.top;
+  const below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
+  const top = below
+    ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
+    : Math.max(rect.top - 14 - bubbleHeight, margin);
+
+  // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
+  const arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
@@ -513,27 +567,30 @@ function GuideCoach({ phase, onGotoScreen }) {
 
       <motion.div
         key={step}
+        ref={bubbleRef}
         initial={{ opacity: 0, scale: 0.92 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.2, ease: EASE }}
         style={{
           position: "absolute",
-          left: centerX,
-          ...(below ? { top: rect.bottom + 14, transform: "translateX(-50%)" } : { top: rect.top - 14, transform: "translate(-50%, -100%)" }),
-          width: 250,
+          left,
+          top,
+          width: bubbleWidth,
+          maxWidth: `calc(100vw - ${margin * 2}px)`,
           background: "#242424",
           color: "#f2f2f2",
           borderRadius: 12,
           padding: "14px 16px",
           boxShadow: "0 10px 32px rgba(0,0,0,.3)",
           pointerEvents: "auto",
+          boxSizing: "border-box",
         }}
       >
         <div
           style={{
             position: "absolute",
-            left: "50%",
-            transform: "translateX(-50%) rotate(45deg)",
+            left: arrowLeft - 6,
+            transform: "rotate(45deg)",
             width: 12,
             height: 12,
             background: "#242424",
@@ -570,55 +627,65 @@ function TopBar({ onProjects, onSaveImage, right }) {
   const goHome = () => {
     window.location.href = "/";
   };
-  const navLinkStyle = { border: "none", background: "none", color: "#777", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0 };
   return (
     <header
       style={{
         position: "sticky",
         top: 0,
         zIndex: 100,
-        background: "rgba(255,255,255,0.92)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        borderBottom: "1px solid #e0e0e0",
+        background: "#fff",
+        borderBottom: "1px solid rgba(36,35,34,.09)",
       }}
     >
       <div
         style={{
-          position: "relative",
-          maxWidth: 900,
+          maxWidth: 1120,
           margin: "0 auto",
-          padding: "10px 16px",
+          padding: "13px 24px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 8,
+          gap: 16,
           flexWrap: "wrap",
         }}
       >
-        <Logo onClick={goHome} />
-        {/* 헤더 전체 기준 정중앙에 고정 (좌우 콘텐츠 폭과 무관하게) */}
-        <div
-          style={{
-            position: "absolute",
-            left: "50%",
-            top: "50%",
-            transform: "translate(-50%, -50%)",
-            display: "flex",
-            alignItems: "center",
-            gap: 14,
-          }}
-        >
-          <button onClick={onProjects} style={navLinkStyle}>
+        <Logo onClick={goHome} height={34} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <button
+            onClick={onProjects}
+            style={{ border: "none", background: "none", color: "#6f6b66", fontSize: 15, fontWeight: 600, cursor: "pointer", padding: 0 }}
+          >
             내 프로젝트
           </button>
           {onSaveImage && (
-            <button data-guide="save-image" onClick={onSaveImage} style={navLinkStyle}>
+            <button
+              data-guide="save-image"
+              onClick={onSaveImage}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: "#fff",
+                border: "1px solid rgba(36,35,34,.14)",
+                borderRadius: 9,
+                padding: "8px 13px",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+                color: "#242322",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
               이미지로 저장
             </button>
           )}
+          {right}
         </div>
-        {right}
       </div>
     </header>
   );
@@ -1059,40 +1126,43 @@ export default function FacilitationBoard() {
     return (
       <div>
         <TopBar onProjects={backToProjects} />
-        <div style={{ maxWidth: 520, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-          <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>퍼실리테이션 보드</div>
-          <div style={{ fontSize: 13, color: "#888", marginBottom: 24 }}>
-            프로젝트별로 진행 내용이 저장됩니다. 이전 프로젝트는 언제든 다시 열어볼 수 있어요.
+        <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 24px 80px" }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-.03em", margin: "0 0 7px" }}>내 프로젝트</h1>
+          <div style={{ fontSize: 15, color: "#8a857f", marginBottom: 28 }}>
+            회의 하나가 프로젝트 하나입니다. 새로 시작하거나 이어서 진행하세요.
           </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <input
-              value={newProjectTitle}
-              onChange={(e) => setNewProjectTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && createProject()}
-              placeholder="새 프로젝트 이름 (예: 2026년 3분기 회고)"
-              style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14 }}
-            />
-            <button
-              onClick={createProject}
-              style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer", whiteSpace: "nowrap" }}
-            >
-              + 새 프로젝트
-            </button>
+
+          {/* 새 프로젝트 만들기 카드 */}
+          <div style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 16, padding: 20, boxShadow: "0 1px 3px rgba(0,0,0,.05)", marginBottom: 28 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <input
+                value={newProjectTitle}
+                onChange={(e) => setNewProjectTitle(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && createProject()}
+                placeholder="프로젝트 이름 (필수)"
+                style={{ flex: "2 1 180px", border: "1px solid rgba(36,35,34,.14)", borderRadius: 10, padding: "12px 14px", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+              />
+              <input
+                value={newProjectGoal}
+                onChange={(e) => setNewProjectGoal(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && createProject()}
+                placeholder="목표 한 줄 (선택)"
+                style={{ flex: "3 1 220px", border: "1px solid rgba(36,35,34,.14)", borderRadius: 10, padding: "12px 14px", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+              />
+              <button
+                onClick={createProject}
+                style={{ background: "#242322", color: "#fff", border: "none", borderRadius: 10, padding: "12px 20px", fontWeight: 600, fontSize: 14, cursor: "pointer", whiteSpace: "nowrap" }}
+              >
+                + 새 프로젝트
+              </button>
+            </div>
           </div>
-          {/* 2번: 프로젝트 목표 한 줄(선택). 시작 시점에 합의를 남겨두기 위한 필드로, 비워도 생성 가능하다. */}
-          <div style={{ fontSize: 12, color: "#999", marginBottom: 4 }}>이번 프로젝트에서 결정하려는 것 (선택)</div>
-          <input
-            value={newProjectGoal}
-            onChange={(e) => setNewProjectGoal(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && createProject()}
-            placeholder="예: 신규 유입 사용자를 늘릴 방법 3가지 찾기"
-            style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 24, boxSizing: "border-box" }}
-          />
-          {projects === null && <div style={{ color: "#aaa", fontSize: 13 }}>불러오는 중...</div>}
+
+          {projects === null && <div style={{ color: "#a19c95", fontSize: 14 }}>불러오는 중...</div>}
           {projects && projects.length === 0 && (
-            <div style={{ color: "#aaa", fontSize: 13 }}>아직 생성된 프로젝트가 없습니다.</div>
+            <div style={{ color: "#a19c95", fontSize: 14, textAlign: "center", padding: "30px 0" }}>아직 생성된 프로젝트가 없습니다.</div>
           )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <AnimatePresence mode="popLayout">
             {projects &&
               [...projects]
@@ -1106,54 +1176,62 @@ export default function FacilitationBoard() {
                   exit={{ opacity: 0, scale: 0.96 }}
                   transition={{ duration: 0.2, ease: EASE }}
                   style={{
-                    border: "1px solid #eee",
-                    borderRadius: 8,
-                    padding: "10px 14px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    cursor: "pointer",
                     background: "#fff",
+                    border: `1px solid ${p.pinned ? "rgba(234,185,122,.5)" : "rgba(36,35,34,.09)"}`,
+                    borderRadius: 14,
+                    padding: "18px 20px",
+                    boxShadow: "0 1px 3px rgba(0,0,0,.04)",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 16,
                   }}
-                  onClick={() => setSelectedProject(p)}
                 >
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>
-                      {p.pinned && <span title="고정됨">📌 </span>}
-                      {p.title}
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePinProject(p.id);
+                    }}
+                    title={p.pinned ? "고정 해제" : "고정"}
+                    style={{ fontSize: 18, cursor: "pointer", flexShrink: 0, filter: p.pinned ? "none" : "grayscale(1) opacity(0.35)" }}
+                  >
+                    📌
+                  </span>
+                  <button
+                    onClick={() => setSelectedProject(p)}
+                    style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
+                    <div style={{ fontSize: 14, color: "#8a857f" }}>
+                      {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성{p.goal ? ` · ${p.goal}` : ""}
                     </div>
-                    <div style={{ fontSize: 12, color: "#999" }}>
-                      {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        togglePinProject(p.id);
-                      }}
-                      style={{ border: "none", background: p.pinned ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.06)", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
-                    >
-                      {p.pinned ? "고정 해제" : "고정"}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmState({
-                          title: "프로젝트 삭제",
-                          message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
-                          confirmLabel: "삭제",
-                          onConfirm: () => {
-                            deleteProject(p.id);
-                            setConfirmState(null);
-                          },
-                        });
-                      }}
-                      style={{ border: "none", background: "rgba(0,0,0,0.06)", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer" }}
-                    >
-                      삭제
-                    </button>
-                  </div>
+                  </button>
+                  <button
+                    onClick={() => setSelectedProject(p)}
+                    style={{ background: "#faf8f4", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                  >
+                    열기
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmState({
+                        title: "프로젝트 삭제",
+                        message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
+                        confirmLabel: "삭제",
+                        onConfirm: () => {
+                          deleteProject(p.id);
+                          setConfirmState(null);
+                        },
+                      });
+                    }}
+                    title="삭제"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#c4bfb8", padding: 6, flexShrink: 0, display: "flex" }}
+                  >
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
                 </motion.div>
               ))}
             </AnimatePresence>
@@ -1176,24 +1254,39 @@ export default function FacilitationBoard() {
     return (
       <div>
         <TopBar onProjects={backToProjects} />
-        <div style={{ maxWidth: 420, margin: "40px auto", padding: 32, fontFamily: "sans-serif", textAlign: "center" }}>
-          <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{selectedProject.title}</div>
-          <div style={{ fontSize: 14, color: "#777", marginBottom: 24 }}>
-            이름이나 닉네임을 입력하면 참여할 수 있어요. 색상은 자동으로 배정됩니다.
+        <div style={{ minHeight: "70vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ width: "100%", maxWidth: 420, textAlign: "center" }}>
+            <div style={{ display: "inline-flex", gap: 4, marginBottom: 22 }}>
+              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#f7d3de" }} />
+              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#bcd9ee" }} />
+              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#a9e6d3" }} />
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#8a857f", marginBottom: 8 }}>초대받은 프로젝트</div>
+            <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 30px" }}>{selectedProject.title}</h1>
+            <div style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 18, padding: 28, boxShadow: "0 2px 10px rgba(0,0,0,.05)" }}>
+              <input
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && joinBoard()}
+                placeholder="이름 또는 닉네임"
+                style={{ width: "100%", border: "1px solid rgba(36,35,34,.14)", borderRadius: 11, padding: "14px 16px", fontSize: 16, outline: "none", textAlign: "center", marginBottom: 14, boxSizing: "border-box" }}
+              />
+              <button
+                onClick={joinBoard}
+                style={{ width: "100%", background: "#242322", color: "#fff", border: "none", borderRadius: 11, padding: 15, fontWeight: 700, fontSize: 16, cursor: "pointer" }}
+              >
+                참여하기
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 16, fontSize: 13, color: "#8a857f" }}>
+                <span style={{ display: "flex", gap: 3 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#f7d3de" }} />
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#dde3ba" }} />
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#d6c9ee" }} />
+                </span>
+                이름을 입력하면 색상이 자동으로 배정됩니다
+              </div>
+            </div>
           </div>
-          <input
-            value={nameInput}
-            onChange={(e) => setNameInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && joinBoard()}
-            placeholder="이름 또는 닉네임"
-            style={{ width: "100%", padding: "10px 14px", fontSize: 15, borderRadius: 8, border: "1px solid #ddd", marginBottom: 12, boxSizing: "border-box" }}
-          />
-          <button
-            onClick={joinBoard}
-            style={{ width: "100%", padding: "10px 14px", fontSize: 15, borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer" }}
-          >
-            참여하기
-          </button>
         </div>
       </div>
     );
@@ -1220,60 +1313,75 @@ export default function FacilitationBoard() {
         {...popIn}
         onClick={() => mergeMode && toggleSelect(note.id, note.topicId)}
         style={{
-          // 화면이 최대(900px 컨테이너 기준)일 때 한 줄에 정확히 4개가 놓이도록 너비를 비율로 계산
-          flex: "0 0 calc(25% - 9px)",
-          width: "calc(25% - 9px)",
-          minWidth: 150,
+          flex: "0 0 190px",
+          width: 190,
           maxWidth: "100%",
           background: noteColor.bg,
-          color: noteColor.text,
+          color: "#242322",
           borderRadius: 6,
-          boxShadow: isSel ? "0 0 0 2px #333" : "none",
-          border: note.isProblem ? "2px solid #d4537e" : note.isParked ? "2px dashed #707070" : "1px solid rgba(0,0,0,0.06)",
+          boxShadow: "0 2px 8px rgba(36,35,34,.09)",
+          border: isSel
+            ? "2px solid #0066ff"
+            : note.isProblem
+            ? "2px solid #EA7D7A"
+            : note.isParked
+            ? "1px dashed rgba(36,35,34,.35)"
+            : "1px solid rgba(36,35,34,.06)",
           cursor: mergeMode ? "pointer" : "default",
           display: "flex",
           flexDirection: "column",
           boxSizing: "border-box",
+          padding: "12px 12px 8px",
+          position: "relative",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "6px 10px 0",
-            fontSize: 11,
-            opacity: 0.7,
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
-            {note.isProblem && <span title="문제로 표시됨">📌</span>}
-            {note.isParked && <span title="보류됨">⏸</span>}
-            {note.authors.join(", ")}
+        {/* 병합 모드 선택 체크박스 */}
+        {mergeMode && (
+          <span
+            style={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+              width: 18,
+              height: 18,
+              borderRadius: 5,
+              border: `2px solid ${isSel ? "#0066ff" : "rgba(36,35,34,.3)"}`,
+              background: isSel ? "#0066ff" : "rgba(255,255,255,.6)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#fff",
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            {isSel ? "✓" : ""}
           </span>
-          {!mergeMode && (
-            <span
-              onClick={(e) => {
-                e.stopPropagation();
-                deleteNote(note.id);
-              }}
-              style={{ cursor: "pointer", padding: "0 4px" }}
-              title="삭제"
-            >
-              ×
-            </span>
-          )}
-        </div>
+        )}
+        {/* 삭제 × (편집 모드에서만) */}
+        {!mergeMode && (
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteNote(note.id);
+            }}
+            style={{ position: "absolute", top: 6, right: 8, cursor: "pointer", color: "rgba(36,35,34,.4)", fontSize: 15, lineHeight: 1 }}
+            title="삭제"
+          >
+            ×
+          </span>
+        )}
 
-        {/* 4번: 병합 모드에서는 disabled textarea 대신 읽기전용 div로 렌더 -> 카드 전체 클릭 선택 가능 */}
+        {/* 4번: 병합 모드에서는 읽기전용 div, 아니면 자동 높이 textarea */}
         {mergeMode ? (
           <div
             style={{
-              padding: "4px 10px 8px",
-              fontSize: 14,
-              lineHeight: 1.4,
-              color: noteColor.text,
-              minHeight: 22,
+              fontSize: 14.5,
+              fontWeight: 500,
+              lineHeight: 1.45,
+              color: "#242322",
+              minHeight: 20,
+              paddingRight: 22,
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
             }}
@@ -1305,20 +1413,48 @@ export default function FacilitationBoard() {
               resize: "none",
               overflow: "hidden",
               outline: "none",
-              fontFamily: "sans-serif",
-              fontSize: 14,
-              lineHeight: 1.4,
-              color: noteColor.text,
-              padding: "4px 10px 8px",
+              fontSize: 14.5,
+              fontWeight: 500,
+              lineHeight: 1.45,
+              color: "#242322",
+              padding: 0,
+              paddingRight: 14,
               boxSizing: "border-box",
               wordBreak: "break-word",
             }}
           />
         )}
 
-        {!mergeMode && (
-          <div style={{ padding: "0 8px 8px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-            <div style={{ display: "flex", gap: 6 }}>
+        {/* 하단: 작성자(좌) + 상태/투표(우) */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(36,35,34,.55)" }}>{note.authors.join(", ")}</span>
+          {!mergeMode && (
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              {/* 7번: 문제 포스트잇에 바로 투표 */}
+              {note.isProblem && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleVote(note.id);
+                  }}
+                  disabled={voteDisabled}
+                  title={voteDisabled ? "남은 투표권이 없습니다" : "투표"}
+                  style={{
+                    border: "none",
+                    background: iVoted ? "#242322" : "rgba(255,255,255,.7)",
+                    color: iVoted ? "#fff" : "#57534e",
+                    borderRadius: 6,
+                    fontSize: 11.5,
+                    padding: "3px 9px",
+                    cursor: voteDisabled ? "default" : "pointer",
+                    opacity: voteDisabled ? 0.45 : 1,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {iVoted ? "✓" : "👍"} {voters.length > 0 ? voters.length : ""}
+                </button>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1327,65 +1463,42 @@ export default function FacilitationBoard() {
                 title={note.isProblem ? "문제 표시 해제" : "문제로 표시"}
                 style={{
                   border: "none",
-                  background: note.isProblem ? "#d4537e" : "rgba(0,0,0,0.12)",
-                  color: note.isProblem ? "#fff" : noteColor.text,
-                  borderRadius: 4,
-                  fontSize: 10,
+                  background: "rgba(255,255,255,.65)",
+                  color: note.isProblem ? "#57534e" : "#B52B1B",
+                  borderRadius: 6,
+                  fontSize: 12,
                   padding: "3px 8px",
                   cursor: "pointer",
-                  fontWeight: 600,
+                  fontWeight: 700,
                 }}
               >
-                {note.isProblem ? "문제 해제" : "문제로"}
+                {note.isProblem ? "해제" : "문제로"}
               </button>
-              {/* 1번: 보류함. 문제로와 동일한 단일 플래그 패턴, 서로 동시에 될 수 없어 자동 배타 처리됨 */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleParked(note.id);
-                }}
-                title={note.isParked ? "보류 해제" : "나중에 다시 논의 (보류)"}
-                style={{
-                  border: "none",
-                  background: note.isParked ? "#707070" : "rgba(0,0,0,0.12)",
-                  color: note.isParked ? "#fff" : noteColor.text,
-                  borderRadius: 4,
-                  fontSize: 10,
-                  padding: "3px 8px",
-                  cursor: "pointer",
-                  fontWeight: 600,
-                }}
-              >
-                {note.isParked ? "보류 해제" : "보류"}
-              </button>
+              {/* 문제 포스트잇에는 보류 버튼을 숨겨 공간 확보 (문제/보류는 상호배타라 어차피 보류 시 문제 해제됨) */}
+              {!note.isProblem && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleParked(note.id);
+                  }}
+                  title={note.isParked ? "보류 해제" : "나중에 다시 논의 (보류)"}
+                  style={{
+                    border: "none",
+                    background: "rgba(255,255,255,.5)",
+                    color: "#57534e",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    padding: "3px 8px",
+                    cursor: "pointer",
+                    fontWeight: 600,
+                  }}
+                >
+                  {note.isParked ? "복귀" : "보류"}
+                </button>
+              )}
             </div>
-            {/* 7번: 문제로 표시된 포스트잇에 바로 투표 */}
-            {note.isProblem && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleVote(note.id);
-                }}
-                disabled={voteDisabled}
-                title={voteDisabled ? "남은 투표권이 없습니다" : "투표"}
-                style={{
-                  border: "none",
-                  background: iVoted ? "#242424" : "rgba(0,0,0,0.12)",
-                  color: iVoted ? "#fff" : noteColor.text,
-                  borderRadius: 999,
-                  fontSize: 11,
-                  padding: "3px 10px",
-                  cursor: voteDisabled ? "default" : "pointer",
-                  opacity: voteDisabled ? 0.4 : 1,
-                  fontWeight: 600,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {iVoted ? "✓ 투표됨" : "👍 투표"} {voters.length > 0 ? voters.length : ""}
-              </button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </motion.div>
     );
   };
@@ -1399,70 +1512,74 @@ export default function FacilitationBoard() {
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span
-              style={{ background: myColor.bg, color: myColor.text, borderRadius: 999, padding: "4px 12px", fontSize: 13, fontWeight: 600 }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: myColor.tint || myColor.bg, borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
             >
+              <span style={{ width: 15, height: 15, borderRadius: 999, background: myColor.bg, flexShrink: 0 }} />
               {name}
             </span>
             <button
               onClick={changeName}
-              style={{ border: "1px solid #ddd", background: "#fff", color: "#666", borderRadius: 999, padding: "4px 10px", fontSize: 12, cursor: "pointer" }}
+              style={{ border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#6f6b66", borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
             >
               다른 이름으로 참여
             </button>
           </div>
         }
       />
-      <div style={{ fontFamily: "sans-serif", maxWidth: 900, margin: "0 auto", padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 15, fontWeight: 600 }}>{selectedProject.title}</span>
-            <span style={{ fontSize: 12, color: "#999" }}>참여자 {Object.keys(board.users).length}명</span>
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[
-              { key: "opinion", label: "의견 작성" },
-              { key: "problem", label: "문제 정리 및 부가 설명" },
-              { key: "voting", label: "우선순위별 결과" },
-            ].map((tab) => (
+      <div style={{ maxWidth: 1120, margin: "0 auto", padding: "20px 24px 60px" }}>
+        {/* 프로젝트 제목 + 참여자 수 */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 19, fontWeight: 800, letterSpacing: "-.02em" }}>{selectedProject.title}</span>
+          <span style={{ fontSize: 13, color: "#8a857f" }}>참여자 {Object.keys(board.users).length}명</span>
+        </div>
+        {/* 탭바: 언더라인 스타일 */}
+        <div
+          style={{
+            display: "flex",
+            gap: 2,
+            marginBottom: 22,
+            borderBottom: "1px solid rgba(36,35,34,.09)",
+            flexWrap: "wrap",
+          }}
+        >
+          {[
+            { key: "opinion", label: "의견 작성" },
+            { key: "problem", label: "문제 정리" },
+            { key: "voting", label: "우선순위 결과" },
+            { key: "document", label: "문서" },
+          ].map((tab) => {
+            const on = board.phase === tab.key;
+            return (
               <button
                 key={tab.key}
                 onClick={() => setPhase(tab.key)}
                 style={{
-                  padding: "6px 14px",
-                  borderRadius: 999,
-                  border: "1px solid #ddd",
-                  background: board.phase === tab.key ? "#242424" : "white",
-                  color: board.phase === tab.key ? "white" : "#333",
-                  fontSize: 13,
+                  padding: "13px 16px",
+                  border: "none",
+                  background: "none",
+                  fontSize: 14,
+                  fontWeight: 600,
                   cursor: "pointer",
+                  color: on ? "#242322" : "#8a857f",
+                  borderBottom: `2px solid ${on ? "#242322" : "transparent"}`,
+                  marginBottom: -1,
                 }}
               >
                 {tab.label}
               </button>
-            ))}
-            <button
-              onClick={() => setPhase("document")}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 999,
-                border: "1px solid #ddd",
-                background: board.phase === "document" ? "#242424" : "white",
-                color: board.phase === "document" ? "white" : "#333",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              문서
-            </button>
-          </div>
+            );
+          })}
         </div>
 
-        <div ref={phaseContentRef} style={{ position: "relative", background: "#fff" }}>
+        <div ref={phaseContentRef} style={{ position: "relative", background: "#f6f4f0" }}>
         <AnimatePresence initial={false}>
         {board.phase === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
-            {/* 안내 문구 배너: 글자 수에 맞춰 세로 길이가 자동으로 늘어나 잘리거나 스크롤이 생기지 않는다 */}
-            <div style={{ background: "#242424", color: "#f2f2f2", borderRadius: 10, padding: "16px 18px", marginBottom: 14 }}>
+            {/* 안내 문구 배너: 왼쪽 STEP 라벨 + 편집 가능한 안내 문구 (글자 수에 맞춰 자동 높이) */}
+            <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#a9e6d3", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
+                STEP 1<br />·<br />의견 작성
+              </div>
               <textarea
                 defaultValue={board.instructions}
                 ref={(el) => autoResizeTextarea(el)}
@@ -1475,111 +1592,104 @@ export default function FacilitationBoard() {
                   updateInstructions(e.target.value);
                 }}
                 style={{
-                  width: "100%",
+                  flex: 1,
                   background: "transparent",
                   border: "none",
                   outline: "none",
                   resize: "none",
                   overflow: "hidden",
-                  color: "#f2f2f2",
-                  fontSize: 13,
+                  color: "#e7e4df",
+                  fontSize: 14.5,
                   lineHeight: 1.6,
-                  fontFamily: "sans-serif",
                   boxSizing: "border-box",
                 }}
               />
             </div>
 
-            {/* 2번: 프로젝트 목표 한 줄 고정. goal이 없으면 영역 자체를 표시하지 않는다.
-                인라인 편집은 주제 이름 수정(renameTopic)과 같은 패턴: onBlur에 값을 반영, 비우면 이전 값 유지 */}
+            {/* 2번: 프로젝트 목표 한 줄 고정. goal이 없으면 영역 자체를 표시하지 않는다. */}
             {selectedProject.goal && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 14, fontSize: 13, color: "#333" }}>
-                <span style={{ flexShrink: 0 }}>🎯 목표:</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 14.5, fontWeight: 600, color: "#242322", background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderLeft: "3px solid #eecd9c", borderRadius: 10, padding: "11px 16px" }}>
+                <span style={{ flexShrink: 0 }}>🎯 목표 :</span>
                 <input
                   key={selectedProject.goal}
                   defaultValue={selectedProject.goal}
                   onBlur={(e) => updateProjectGoal(e.target.value.trim() || selectedProject.goal)}
-                  style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontWeight: 600, color: "#333", minWidth: 0, fontFamily: "sans-serif", fontSize: 13 }}
+                  style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontWeight: 500, color: "#57534e", minWidth: 0, fontSize: 14.5 }}
                 />
               </div>
             )}
 
-            {/* 참여자 색상 범례 */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            {/* 참여자 색상 범례 (툴바) */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, alignItems: "center" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", marginRight: 2, marginLeft: 4 }}>참여자</span>
               {Object.entries(board.users).map(([uname, u]) => (
                 <span
                   key={uname}
-                  style={{ background: u.color.bg, color: u.color.text, borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600 }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: u.color.tint || u.color.bg, borderRadius: 999, padding: "5px 12px 5px 7px", fontSize: 13, fontWeight: 600, color: "#242322" }}
                 >
+                  <span style={{ width: 16, height: 16, borderRadius: 999, background: u.color.bg, flexShrink: 0 }} />
                   {uname}
                 </span>
               ))}
             </div>
 
-            {/* 7번: 투표는 이 화면에서 이뤄지므로 남은 투표권을 여기에 안내 */}
-            <div
-              data-guide="vote-status"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                flexWrap: "wrap",
-                background: "#eeeeee",
-                border: "1px solid #e0e0e0",
-                borderRadius: 8,
-                padding: "8px 12px",
-                marginBottom: 14,
-                fontSize: 13,
-                color: "#555",
-              }}
-            >
-              <span>
-                투표: 남은 <b>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표
-              </span>
-              <span style={{ color: "#999" }}>· 📌 문제로 표시된 포스트잇의 "투표" 버튼으로 투표하세요 (항목당 1표)</span>
+            {/* 툴바: 투표 안내(좌) + 보드 추가/병합 모드(우) */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+              <div data-guide="vote-status" style={{ fontSize: 13, color: "#8a857f" }}>
+                투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  onClick={addTopic}
+                  style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}
+                >
+                  + 의견 보드
+                </button>
+                <button
+                  data-guide="merge"
+                  onClick={() => {
+                    setMergeMode((m) => !m);
+                    setSelected([]);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    padding: "8px 14px",
+                    borderRadius: 9,
+                    border: `1px solid ${mergeMode ? "#bcd9ee" : "rgba(36,35,34,.14)"}`,
+                    background: mergeMode ? "#eef4fb" : "#fff",
+                    color: mergeMode ? "#0b57b8" : "#242322",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  </svg>
+                  {mergeMode ? "병합 모드 종료" : "병합 모드"}
+                </button>
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <button
-                onClick={addTopic}
-                style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #ddd", background: "white", color: "#333", cursor: "pointer", fontSize: 13 }}
-              >
-                + 의견 보드 추가
-              </button>
-              <button
-                data-guide="merge"
-                onClick={() => {
-                  setMergeMode((m) => !m);
-                  setSelected([]);
-                }}
-                style={{
-                  padding: "8px 16px",
-                  borderRadius: 8,
-                  border: "1px solid #ddd",
-                  background: mergeMode ? "#242424" : "white",
-                  color: mergeMode ? "white" : "#333",
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                {mergeMode ? "병합 모드 종료" : "병합 모드"}
-              </button>
-              {mergeMode ? (
-                <span style={{ fontSize: 13, color: "#777" }}>
-                  같은 보드 안에서 합칠 포스트잇 2개 이상을 클릭해 선택하세요. 선택됨: {selected.length}개
-                  {selected.length >= 2 && (
-                    <button
-                      onClick={mergeSelected}
-                      style={{ marginLeft: 10, padding: "4px 12px", borderRadius: 6, border: "none", background: "#242424", color: "white", cursor: "pointer", fontSize: 12 }}
-                    >
-                      선택한 포스트잇 병합
-                    </button>
-                  )}
+            {/* 병합 모드 안내 바 */}
+            {mergeMode && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#eef4fb", border: "1px solid #bcd9ee", borderRadius: 10, padding: "10px 16px", marginBottom: 16 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#0b57b8" }}>
+                  같은 보드 안에서 합칠 포스트잇을 2개 이상 선택하세요 · {selected.length}개 선택됨
                 </span>
-              ) : (
-                <span style={{ fontSize: 12, color: "#aaa" }}>각 보드의 "+ 포스트잇"을 누르면 새 의견이 쌓입니다.</span>
-              )}
-            </div>
+                {selected.length >= 2 && (
+                  <button
+                    onClick={mergeSelected}
+                    style={{ background: "#0066ff", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
+                  >
+                    선택 병합
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* 의견 보드들을 세로로 쌓는다. 각 보드 안에서 포스트잇은 좌->우로 채워지고 줄이 차면 다음 줄로(5번). */}
             <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -1596,13 +1706,22 @@ export default function FacilitationBoard() {
                     ref={(el) => {
                       topicRefs.current[topic.id] = el;
                     }}
-                    style={{ width: "100%" }}
+                    {...(topicIdx === 0 ? { "data-guide": "note-board" } : {})}
+                    style={{
+                      width: "100%",
+                      background: "#fff",
+                      border: "1px solid rgba(36,35,34,.08)",
+                      borderRadius: 18,
+                      padding: 20,
+                      boxShadow: "0 1px 3px rgba(0,0,0,.04)",
+                      boxSizing: "border-box",
+                    }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, gap: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8 }}>
                       <input
                         defaultValue={topic.title}
                         onBlur={(e) => renameTopic(topic.id, e.target.value.trim() || topic.title)}
-                        style={{ fontSize: 13, fontWeight: 600, color: "#666", border: "none", background: "transparent", outline: "none", flex: 1, minWidth: 0 }}
+                        style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-.01em", color: "#242322", border: "none", background: "transparent", outline: "none", flex: 1, minWidth: 0 }}
                       />
                       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                         {/* 3번: 보드 삭제 (마지막 1개는 삭제 불가) */}
@@ -1610,7 +1729,7 @@ export default function FacilitationBoard() {
                           <button
                             onClick={() => requestDeleteTopic(topic)}
                             title={problemNotes.length + plainNotes.length + parkedNotes.length === 0 ? "빈 보드 삭제" : "보드 삭제"}
-                            style={{ border: "1px solid #eee", background: "#fff", color: "#999", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}
+                            style={{ border: "1px solid rgba(36,35,34,.1)", background: "#fff", color: "#a19c95", borderRadius: 9, padding: "7px 11px", cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}
                           >
                             보드 삭제
                           </button>
@@ -1618,30 +1737,31 @@ export default function FacilitationBoard() {
                         <button
                           data-guide="add-note"
                           onClick={() => createBlankNote(topic.id)}
-                          style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: myColor.bg, color: myColor.text, fontWeight: 600, cursor: "pointer", fontSize: 12 }}
+                          style={{ padding: "7px 13px", borderRadius: 9, border: "1px dashed rgba(36,35,34,.22)", background: "#faf8f4", color: "#57534e", fontWeight: 600, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
                         >
                           + 포스트잇
                         </button>
                       </div>
                     </div>
                     <div
-                      /* 가이드 투어의 '문제로' 단계가 가리키는 대상: 포스트잇 보드 영역(첫 보드 기준) */
-                      {...(topicIdx === 0 ? { "data-guide": "note-board" } : {})}
                       style={{
                         display: "flex",
                         flexDirection: "column",
                         gap: 14,
-                        background: "#ffffff",
-                        border: "1px solid #e0e0e0",
-                        borderRadius: 10,
-                        padding: 14,
                         overflowX: "hidden",
                       }}
                     >
-                      {/* 6번: 문제로 표시된 포스트잇을 보드 상단에 고정 */}
+                      {/* 6번: 문제로 표시된 포스트잇을 보드 상단에 별도 구획(빨강 점선)으로 고정 */}
                       {problemNotes.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#c0392b", marginBottom: 8 }}>📌 문제로 표시된 의견</div>
+                        <div style={{ border: "1px dashed #EA7A7A", borderRadius: 12, padding: "12px 12px 12px", background: "#FDF2EE" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, fontWeight: 700, color: "#B5271B", marginBottom: 10, paddingLeft: 2 }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                              <line x1="12" y1="9" x2="12" y2="13" />
+                              <line x1="12" y1="17" x2="12.01" y2="17" />
+                            </svg>
+                            문제로 표시됨
+                          </div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                             <AnimatePresence mode="popLayout">{problemNotes.map(renderNoteCard)}</AnimatePresence>
                           </div>
@@ -1653,17 +1773,17 @@ export default function FacilitationBoard() {
                           <AnimatePresence mode="popLayout">{plainNotes.map(renderNoteCard)}</AnimatePresence>
                         </div>
                       )}
-                      {/* 1번: 보류된 포스트잇은 문제 섹션과 동일하게, 일반 포스트잇 아래에 별도 구획으로 고정 */}
+                      {/* 1번: 보류된 포스트잇은 일반 포스트잇 아래에 별도 구획으로 고정 */}
                       {parkedNotes.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: "#888888", marginBottom: 8 }}>⏸ 보류된 의견</div>
+                        <div style={{ border: "1px dashed rgba(36,35,34,.18)", borderRadius: 12, padding: "12px 12px 12px", background: "#faf8f4" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", marginBottom: 10, paddingLeft: 2 }}>⏸ 보류된 의견</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                             <AnimatePresence mode="popLayout">{parkedNotes.map(renderNoteCard)}</AnimatePresence>
                           </div>
                         </div>
                       )}
                       {topicNotes.length === 0 && (
-                        <div style={{ color: "#bbb", fontSize: 13, padding: 6 }}>아직 포스트잇이 없습니다.</div>
+                        <div style={{ color: "#a19c95", fontSize: 13, padding: 6 }}>아직 포스트잇이 없습니다. "+ 포스트잇"을 눌러 시작하세요.</div>
                       )}
                     </div>
                   </div>
@@ -1672,7 +1792,7 @@ export default function FacilitationBoard() {
             </div>
 
             {/* 1번: 보류함. 원래 보드 자리에는 그대로 남기고(위 parkedNotes 구획에 포함), 전체 프로젝트 기준으로 모아 보여주는 접이식 섹션 */}
-            <div style={{ marginTop: 20 }}>
+            <div style={{ marginTop: 22, background: "#fff", border: "1px solid rgba(36,35,34,.08)", borderRadius: 14, overflow: "hidden" }}>
               <button
                 onClick={() => setParkingOpen((v) => !v)}
                 style={{
@@ -1680,18 +1800,20 @@ export default function FacilitationBoard() {
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  padding: "10px 14px",
-                  borderRadius: parkingOpen ? "10px 10px 0 0" : 10,
-                  border: "1px solid #e0e0e0",
-                  background: "#eeeeee",
-                  color: "#555555",
-                  fontSize: 13,
-                  fontWeight: 600,
+                  padding: "15px 20px",
+                  border: "none",
+                  background: "none",
+                  color: "#242322",
+                  fontSize: 15,
+                  fontWeight: 700,
                   cursor: "pointer",
                 }}
               >
-                <span>⏸ 보류함 ({parkedNotesAll.length})</span>
-                <span>{parkingOpen ? "▲" : "▼"}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  📥 보류함
+                  <span style={{ background: "#f0ede8", color: "#8a857f", borderRadius: 999, padding: "1px 9px", fontSize: 12, fontWeight: 700 }}>{parkedNotesAll.length}</span>
+                </span>
+                <span style={{ fontSize: 13, color: "#8a857f", transform: parkingOpen ? "rotate(180deg)" : "rotate(0)", transition: "transform .15s" }}>▾</span>
               </button>
               <AnimatePresence>
               {parkingOpen && (
@@ -1702,19 +1824,18 @@ export default function FacilitationBoard() {
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.22, ease: EASE }}
                   style={{
-                    border: "1px solid #e0e0e0",
-                    borderTop: "none",
-                    borderRadius: "0 0 10px 10px",
+                    borderTop: "1px solid rgba(36,35,34,.07)",
                     overflow: "hidden",
                   }}
                 >
-                  <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ padding: "14px 20px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
                   {parkedNotesAll.length === 0 && (
-                    <div style={{ color: "#bbb", fontSize: 13, padding: 4 }}>보류된 의견이 없습니다.</div>
+                    <div style={{ color: "#a19c95", fontSize: 13, padding: "16px 0", textAlign: "center" }}>보류한 의견이 없습니다.</div>
                   )}
                   <AnimatePresence mode="popLayout">
                   {parkedNotesAll.map((n) => {
                     const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
+                    const nColor = board.users[n.authors[0]]?.color || PALETTE[0];
                     return (
                       <motion.div
                         key={n.id}
@@ -1723,22 +1844,22 @@ export default function FacilitationBoard() {
                           display: "flex",
                           flexDirection: "column",
                           gap: 6,
-                          padding: "8px 10px",
-                          borderRadius: 8,
-                          background: "#fff",
-                          border: "1px dashed #bdbdbd",
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          background: "#f7f7f7",
                         }}
                       >
                         <div
                           onClick={() => scrollToTopic(n.topicId)}
                           title="원래 의견 보드로 이동"
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, cursor: "pointer" }}
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, cursor: "pointer" }}
                         >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 11, color: "#888888", marginBottom: 2 }}>⏸ {topicTitle}</div>
-                            <div style={{ fontSize: 13, color: "#444", wordBreak: "break-word" }}>
-                              {n.text || <span style={{ color: "#bbb" }}>(빈 포스트잇)</span>}
-                            </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flex: 1 }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 999, flexShrink: 0, background: nColor.bg }} />
+                            <span style={{ fontSize: 14.5, color: "#57534e", wordBreak: "break-word", flex: 1 }}>
+                              {n.text || <span style={{ color: "#a19c95" }}>(빈 포스트잇)</span>}
+                            </span>
+                            <span style={{ fontSize: 13, color: "#a19c95", flexShrink: 0 }}>{topicTitle}</span>
                           </div>
                           <button
                             onClick={(e) => {
@@ -1746,12 +1867,13 @@ export default function FacilitationBoard() {
                               toggleParked(n.id);
                             }}
                             style={{
-                              border: "none",
-                              background: "rgba(0,0,0,0.08)",
-                              color: "#666",
-                              borderRadius: 6,
-                              fontSize: 11,
-                              padding: "5px 10px",
+                              border: "1px solid rgba(36,35,34,.12)",
+                              background: "#fff",
+                              color: "#242322",
+                              borderRadius: 7,
+                              fontSize: 13,
+                              fontWeight: 600,
+                              padding: "6px 11px",
                               cursor: "pointer",
                               flexShrink: 0,
                               whiteSpace: "nowrap",
@@ -1760,9 +1882,9 @@ export default function FacilitationBoard() {
                             의견으로 되돌리기
                           </button>
                         </div>
-                        {/* 보류된 이유: "문제" 설명과 동일하게 note.description을 재사용 (문제/보류는 동시에 될 수 없어 의미가 겹치지 않음) */}
+                        {/* 보류된 이유: "문제" 설명과 동일하게 note.description을 재사용 */}
                         <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                          <span style={{ fontSize: 11, color: "#888888", flexShrink: 0, marginTop: 6 }}>이유 :</span>
+                          <span style={{ fontSize: 12, color: "#a19c95", flexShrink: 0, marginTop: 6 }}>이유 :</span>
                           <textarea
                             value={n.description || ""}
                             ref={(el) => autoResizeTextarea(el)}
@@ -1795,18 +1917,43 @@ export default function FacilitationBoard() {
 
         {board.phase === "problem" && (
           <motion.div key="problem" {...fadeSlide}>
-            <div data-guide="problem-area" style={{ fontSize: 13, color: "#666", marginBottom: 16, background: "#eeeeee", border: "1px solid #e0e0e0", borderRadius: 8, padding: "10px 12px" }}>
-              여러 의견 보드에서 <b>"문제로"</b> 표시된 포스트잇을 한곳에 모았습니다. 여기서 문구를 다듬으면 원래 보드의 포스트잇도 함께 바뀝니다.
+            {/* STEP 2 배너 */}
+            <div data-guide="problem-area" style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#bcd9ee", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
+                STEP 2<br />·<br />문제 정리
+              </div>
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#e7e4df" }}>
+                여러 보드에서 <b style={{ color: "#fff" }}>"문제로"</b> 표시한 의견을 한곳에 모았습니다. 문구를 다듬고, 필요하면 배경 설명을 덧붙이세요.
+                <br />다음 단계에서 이 목록으로 투표합니다.
+              </p>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {problemNotesAll.map((n) => {
+            {problemNotesAll.length === 0 && (
+              <div style={{ textAlign: "center", padding: "60px 20px", color: "#a19c95", fontSize: 14 }}>
+                아직 문제로 표시된 의견이 없습니다.
+                <br />의견 작성 탭에서 "문제로"를 눌러 추가하세요.
+              </div>
+            )}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {problemNotesAll.map((n, i) => {
                 const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
                 return (
-                  <div key={n.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8, background: "#fff" }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                      <span style={{ fontSize: 11, color: "#c0392b", flexShrink: 0, marginTop: 6 }} title="원래 의견 보드">
-                        📌 {topicTitle}
-                      </span>
+                  <div key={n.id} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 14, padding: "18px 20px", boxShadow: "0 1px 3px rgba(0,0,0,.04)", display: "flex", gap: 16 }}>
+                    <span style={{ width: 30, height: 30, borderRadius: 8, color: "#1B65B5", fontWeight: 800, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, background: "#EEF0FD" }}>
+                      {i + 1}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#f6f4f0", borderRadius: 999, padding: "3px 10px", fontSize: 13, fontWeight: 600, color: "#8a857f" }}>
+                          원본 : {topicTitle}
+                        </span>
+                        <button
+                          onClick={() => toggleProblem(n.id)}
+                          title="문제 표시 해제 (포스트잇은 유지)"
+                          style={{ border: "1px solid rgba(36,35,34,.1)", background: "#fff", color: "#a19c95", borderRadius: 7, fontSize: 12, fontWeight: 600, padding: "3px 9px", cursor: "pointer", marginLeft: "auto" }}
+                        >
+                          문제 해제
+                        </button>
+                      </div>
                       <textarea
                         value={n.text}
                         ref={(el) => autoResizeTextarea(el)}
@@ -1821,18 +1968,8 @@ export default function FacilitationBoard() {
                           suspendPollRef.current = false;
                           commitNoteText(n.id);
                         }}
-                        style={{ flex: 1, border: "none", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "sans-serif", outline: "none", minHeight: 40 }}
+                        style={{ width: "100%", border: "none", borderBottom: "1px solid transparent", resize: "none", overflow: "hidden", fontSize: 16.5, fontWeight: 700, color: "#242322", outline: "none", padding: "2px 0 6px", boxSizing: "border-box", lineHeight: 1.4 }}
                       />
-                      <button
-                        onClick={() => toggleProblem(n.id)}
-                        title="문제 표시 해제 (포스트잇은 유지)"
-                        style={{ border: "1px solid #eee", background: "#fff", color: "#999", borderRadius: 4, fontSize: 11, padding: "4px 8px", cursor: "pointer", flexShrink: 0 }}
-                      >
-                        문제 해제
-                      </button>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                      <span style={{ fontSize: 11, color: "#999", flexShrink: 0, marginTop: 6 }}>설명 :</span>
                       <textarea
                         value={n.description || ""}
                         ref={(el) => autoResizeTextarea(el)}
@@ -1847,77 +1984,116 @@ export default function FacilitationBoard() {
                           suspendPollRef.current = false;
                           commitNoteDescription(n.id);
                         }}
-                        placeholder="문제에 대한 짧은 설명을 입력하세요"
-                        style={{ flex: 1, border: "none", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "sans-serif", outline: "none", minHeight: 40 }}
+                        placeholder="부가 설명 추가 (선택) — 왜 문제인지, 어떤 상황인지"
+                        style={{ width: "100%", border: "none", resize: "none", overflow: "hidden", fontSize: 14, color: "#6f6b66", outline: "none", padding: "6px 0 0", boxSizing: "border-box", lineHeight: 1.5 }}
                       />
                     </div>
                   </div>
                 );
               })}
             </div>
-            {problemNotesAll.length === 0 && (
-              <div style={{ color: "#aaa", fontSize: 14 }}>의견 작성 탭에서 포스트잇을 "문제로" 표시하면 여기 모입니다.</div>
-            )}
           </motion.div>
         )}
 
         {board.phase === "voting" && (
           <motion.div key="voting" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, fontSize: 13, color: "#666", flexWrap: "wrap", gap: 8 }}>
-              <div>득표수가 많은 순으로 정렬된 결과입니다 (읽기 전용). 투표는 "의견 작성" 탭에서 합니다.</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span>1인당 투표권</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={board.votesPerUser}
-                  onChange={(e) => setVotesPerUser(Number(e.target.value) || 1)}
-                  style={{ width: 50, padding: 4, borderRadius: 6, border: "1px solid #ddd" }}
-                />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 4px" }}>우선순위 결과</h2>
+                <p style={{ fontSize: 13.5, color: "#8a857f", margin: 0 }}>
+                  득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표 · 투표는 "의견 작성" 탭에서
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
+                <button
+                  onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
+                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                >
+                  −
+                </button>
+                <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
+                <button
+                  onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
+                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                >
+                  +
+                </button>
               </div>
             </div>
-            <div data-guide="vote-area" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {rankedProblems.map((p, i) => {
-                const voters = board.votes[p.id] || [];
-                return (
-                  <div key={p.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, background: i === 0 ? "#fdf3f7" : "#fff" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: i === 0 ? "#d4537e" : "#999", width: 20, textAlign: "center", flexShrink: 0 }}>{i + 1}</span>
-                      <span style={{ fontSize: 14 }}>{p.text}</span>
-                    </div>
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 160, justifyContent: "flex-end" }}>
-                      {voters.map((v) => {
-                        const c = board.users[v]?.color || PALETTE[0];
-                        return <span key={v} title={v} style={{ width: 14, height: 14, borderRadius: "50%", background: c.bg, border: `1px solid ${c.border}`, display: "inline-block" }} />;
-                      })}
-                    </div>
-                    <div style={{ fontSize: 13, color: "#666", width: 36, textAlign: "right", flexShrink: 0 }}>{voters.length}표</div>
-                  </div>
-                );
-              })}
-            </div>
             {rankedProblems.length === 0 && (
-              <div style={{ color: "#aaa", fontSize: 14 }}>의견 작성 탭에서 포스트잇을 "문제로" 표시하고 투표하면 여기 순위가 나타납니다.</div>
+              <div style={{ textAlign: "center", padding: "60px 20px", color: "#a19c95", fontSize: 14 }}>
+                투표할 문제가 없습니다. 먼저 의견 작성 탭에서 "문제로" 표시하고 투표하세요.
+              </div>
             )}
+            {(() => {
+              const maxV = Math.max(1, ...rankedProblems.map((p) => (board.votes[p.id] || []).length));
+              return (
+                <div data-guide="vote-area" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {rankedProblems.map((p, i) => {
+                    const voters = board.votes[p.id] || [];
+                    const first = i === 0 && voters.length > 0;
+                    return (
+                      <div
+                        key={p.id}
+                        style={{
+                          background: first ? "#f5f3fe" : "#fff",
+                          border: `1px solid ${first ? "#a99bf2" : "rgba(36,35,34,.09)"}`,
+                          borderRadius: 14,
+                          padding: "18px 20px",
+                          boxShadow: first ? "0 4px 14px rgba(120,95,235,.25)" : "0 1px 3px rgba(0,0,0,.04)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 18,
+                        }}
+                      >
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 44, flexShrink: 0 }}>
+                          {first && <span style={{ fontSize: 11, fontWeight: 700, color: "#4f3fd6" }}>1위</span>}
+                          <span style={{ fontSize: 28, fontWeight: 800, lineHeight: 1, color: first ? "#4f3fd6" : "#bcbcbc" }}>{i + 1}</span>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: "-.01em", marginBottom: p.description ? 4 : 8 }}>{p.text}</div>
+                          {p.description && <div style={{ fontSize: 14, color: "#8a857f", marginBottom: 9 }}>{p.description}</div>}
+                          <div style={{ height: 8, background: "#f0ede8", borderRadius: 999, overflow: "hidden", marginBottom: 9 }}>
+                            <div style={{ height: "100%", borderRadius: 999, background: first ? "#8a7cf0" : "#c4c4c4", width: `${Math.round((voters.length / maxV) * 100)}%` }} />
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ display: "flex" }}>
+                              {voters.map((v) => {
+                                const c = board.users[v]?.color || PALETTE[0];
+                                return <span key={v} title={v} style={{ width: 18, height: 18, borderRadius: 999, border: "2px solid #fff", marginLeft: -5, background: c.bg, display: "inline-block" }} />;
+                              })}
+                            </div>
+                            <span style={{ fontSize: 12.5, color: "#8a857f", fontWeight: 600 }}>{voters.length}표</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </motion.div>
         )}
 
         {board.phase === "document" && (
           <motion.div key="document" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-              <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+              {/* 세그먼트 토글 (과정 / 결과) */}
+              <div style={{ display: "inline-flex", borderRadius: 11, padding: 4, background: "#eeeeee" }}>
                 <button
                   data-guide="doc-type-process"
                   onClick={() => setDocType("process")}
                   style={{
-                    padding: "6px 14px",
-                    borderRadius: 999,
-                    border: "1px solid #ddd",
-                    background: docType === "process" ? "#242424" : "white",
-                    color: docType === "process" ? "white" : "#333",
-                    fontSize: 13,
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "9px 20px",
+                    fontSize: 14,
+                    fontWeight: 700,
                     cursor: "pointer",
+                    background: docType === "process" ? "#fff" : "transparent",
+                    color: docType === "process" ? "#242322" : "#8a857f",
+                    boxShadow: docType === "process" ? "0 1px 2px rgba(0,0,0,.1)" : "none",
                   }}
                 >
                   과정 문서
@@ -1926,42 +2102,50 @@ export default function FacilitationBoard() {
                   data-guide="doc-type-result"
                   onClick={() => setDocType("result")}
                   style={{
-                    padding: "6px 14px",
-                    borderRadius: 999,
-                    border: "1px solid #ddd",
-                    background: docType === "result" ? "#242424" : "white",
-                    color: docType === "result" ? "white" : "#333",
-                    fontSize: 13,
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "9px 20px",
+                    fontSize: 14,
+                    fontWeight: 700,
                     cursor: "pointer",
+                    background: docType === "result" ? "#fff" : "transparent",
+                    color: docType === "result" ? "#242322" : "#8a857f",
+                    boxShadow: docType === "result" ? "0 1px 2px rgba(0,0,0,.1)" : "none",
                   }}
                 >
-                  결과 문서(문제 우선순위 TOP 5)
+                  결과 문서
                 </button>
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  onClick={() => downloadDoc(docType)}
-                  style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#242424", color: "white", cursor: "pointer", fontSize: 13 }}
-                >
-                  문서 다운로드 (HTML)
-                </button>
-                <button
-                  onClick={() => downloadDocMarkdown(docType)}
-                  style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #242424", background: "white", color: "#242424", cursor: "pointer", fontSize: 13 }}
-                >
-                  문서 다운로드 (Markdown)
-                </button>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={downloadDocImage}
-                  style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid #242424", background: "white", color: "#242424", cursor: "pointer", fontSize: 13 }}
+                  style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
                 >
                   이미지로 저장
                 </button>
+                <button
+                  onClick={() => downloadDoc(docType)}
+                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                >
+                  HTML로 다운로드
+                </button>
+                <button
+                  onClick={() => downloadDocMarkdown(docType)}
+                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                >
+                  마크다운으로 다운로드
+                </button>
               </div>
             </div>
-            <div ref={docContentRef} style={{ background: "#fff" }}>
-            <div style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
-              {docType === "process" ? "의견 작성부터 문제 정리까지의 진행 과정을 표로 정리한 문서입니다." : "우선순위 TOP 5 결과만 표로 정리한 문서입니다."}
+            <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)", maxWidth: 860, margin: "0 auto" }}>
+            <div style={{ borderBottom: "2px solid #242322", paddingBottom: 14, marginBottom: 22 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", letterSpacing: ".04em" }}>
+                {docType === "process" ? "과정 문서 · PROCESS" : "결과 문서 · RESULT"}
+              </div>
+              <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "8px 0 0" }}>{selectedProject.title}</h1>
+              <div style={{ fontSize: 14, color: "#8a857f", marginTop: 4 }}>
+                {docType === "process" ? "회의에서 오간 모든 의견의 기록" : "득표순으로 정리된 최종 우선순위"}
+              </div>
             </div>
 
             {docType === "process" ? (

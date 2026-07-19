@@ -1075,6 +1075,14 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, votesPerUser: n });
   };
 
+  // 시안(Onalign.dc.html)의 녹음 토글. 실제 오디오 녹음은 하지 않고, "녹음 중" 상태만
+  // 보드에 공유해서 참여자 누구나 켤 수 있고 모두의 화면 상단에 배지로 보이게 한다(시각 표시 전용).
+  const toggleRecording = async () => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, recording: !current.recording });
+  };
+
   // "이미지로 저장": 현재 보고 있는 탭에 실제로 렌더링된 화면 전체(스크롤 영역 포함)를 그대로 캡처한다
   const downloadPhaseImage = async () => {
     const node = phaseContentRef.current;
@@ -1511,6 +1519,13 @@ export default function FacilitationBoard() {
         onSaveImage={downloadPhaseImage}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* 시안의 "녹음 중" 배지 (시각 표시 전용) */}
+            {board.recording && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "#fdeaea", border: "1px solid #ffcaca", borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 700, color: "#d32f2f" }}>
+                <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: "oaRecPulse 1.1s ease-in-out infinite" }} />
+                녹음 중
+              </span>
+            )}
             <span
               style={{ display: "inline-flex", alignItems: "center", gap: 6, background: myColor.tint || myColor.bg, borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
             >
@@ -1644,6 +1659,27 @@ export default function FacilitationBoard() {
                   style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}
                 >
                   + 의견 보드
+                </button>
+                {/* 시안의 녹음 토글 (시각 표시 전용 — 실제 오디오 녹음은 하지 않음) */}
+                <button
+                  onClick={toggleRecording}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    padding: "8px 14px",
+                    borderRadius: 9,
+                    border: `1px solid ${board.recording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
+                    background: board.recording ? "#fdeaea" : "#fff",
+                    color: board.recording ? "#d32f2f" : "#242322",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: board.recording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+                  {board.recording ? "녹음 중지" : "녹음 시작"}
                 </button>
                 <button
                   data-guide="merge"

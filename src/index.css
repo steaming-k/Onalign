@@ -1,4 +1,6 @@
 /* 앱 전역 기본 스타일. 브라우저 다크모드에서도 밝은 배경을 유지한다. */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
+
 :root {
   color-scheme: light;
 }
@@ -7,14 +9,22 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: #ffffff;
-  color: #202020;
+  /* 순백 대신 살짝 따뜻한 오프화이트: 흰 카드/포스트잇이 배경 위로 부드럽게 떠 보인다 */
+  background: #f6f4f0;
+  color: #242322;
+  font-family: "Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* 텍스트 선택 하이라이트도 팔레트 색으로 (연보라) */
+::selection {
+  background: #d6c9ee;
 }
 
 /* 화면 전반의 딱딱 끊기는 느낌을 줄이기 위한 공통 트랜지션.
    새로 추가하는 버튼/입력도 별도 스타일 없이 이 규칙을 그대로 물려받는다. */
 button, input, textarea, select {
+  font-family: inherit;
   transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.15s ease,
     border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }

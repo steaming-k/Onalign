@@ -1586,7 +1586,7 @@ export default function FacilitationBoard() {
           })}
         </div>
 
-        <div ref={phaseContentRef} style={{ position: "relative", background: "#f6f4f0" }}>
+        <div ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
         <AnimatePresence initial={false}>
         {board.phase === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
@@ -1654,12 +1654,6 @@ export default function FacilitationBoard() {
                 투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <button
-                  onClick={addTopic}
-                  style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}
-                >
-                  + 의견 보드
-                </button>
                 {/* 시안의 녹음 토글 (시각 표시 전용 — 실제 오디오 녹음은 하지 않음) */}
                 <button
                   onClick={toggleRecording}
@@ -1825,6 +1819,23 @@ export default function FacilitationBoard() {
                   </div>
                 );
               })}
+
+              {/* 시안처럼 의견 보드 추가 버튼을 보드 목록 맨 아래에 전체폭 점선 버튼으로 배치 */}
+              <button
+                onClick={addTopic}
+                style={{
+                  background: "none",
+                  border: "1.5px dashed rgba(36,35,34,.2)",
+                  borderRadius: 14,
+                  padding: 16,
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: "#8a857f",
+                  cursor: "pointer",
+                }}
+              >
+                + 새 의견 보드
+              </button>
             </div>
 
             {/* 1번: 보류함. 원래 보드 자리에는 그대로 남기고(위 parkedNotes 구획에 포함), 전체 프로젝트 기준으로 모아 보여주는 접이식 섹션 */}

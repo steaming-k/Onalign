@@ -2015,6 +2015,7 @@ export default function FacilitationBoard() {
                           suspendPollRef.current = false;
                           commitNoteText(n.id);
                         }}
+                        placeholder="문제 문구 — 무엇이 문제인가요? (원본 포스트잇과 연동)"
                         style={{ width: "100%", border: "none", borderBottom: "1px solid transparent", resize: "none", overflow: "hidden", fontSize: 16.5, fontWeight: 700, color: "#242322", outline: "none", padding: "2px 0 6px", boxSizing: "border-box", lineHeight: 1.4 }}
                       />
                       <textarea

@@ -2049,8 +2049,22 @@ export default function FacilitationBoard() {
               <div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 4px" }}>우선순위 결과</h2>
                 <p style={{ fontSize: 13.5, color: "#8a857f", margin: 0 }}>
-                  득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표 · 투표는 "의견 작성" 탭에서
+                  득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표
                 </p>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <button
+                  onClick={() => setPhase("opinion")}
+                  style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                >
+                  취소
+                </button>
+                <button
+                  onClick={() => setPhase("opinion")}
+                  style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: "#242322", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                >
+                  투표하기
+                </button>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>

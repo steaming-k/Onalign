@@ -5,12 +5,17 @@
   color-scheme: light;
 }
 
+/* 시안(Onalign.dc.html) 최신본 반영: 스크롤바 자리를 항상 확보해
+   콘텐츠 높이가 바뀔 때 가로로 흔들리는 현상을 막는다 */
+html {
+  scrollbar-gutter: stable;
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
-  /* 순백 대신 살짝 따뜻한 오프화이트: 흰 카드/포스트잇이 배경 위로 부드럽게 떠 보인다 */
-  background: #f6f4f0;
+  background: #ffffff;
   color: #242322;
   font-family: "Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -30,4 +35,10 @@ button, input, textarea, select {
 }
 button:active:not(:disabled) {
   transform: scale(0.96);
+}
+
+/* 시안의 녹음 표시용 점멸 애니메이션 */
+@keyframes oaRecPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }

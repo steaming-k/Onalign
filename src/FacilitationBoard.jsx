@@ -1075,6 +1075,14 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, votesPerUser: n });
   };
 
+  // 시안(Onalign.dc.html)의 녹음 토글. 실제 오디오 녹음은 하지 않고, "녹음 중" 상태만
+  // 보드에 공유해서 참여자 누구나 켤 수 있고 모두의 화면 상단에 배지로 보이게 한다(시각 표시 전용).
+  const toggleRecording = async () => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, recording: !current.recording });
+  };
+
   // "이미지로 저장": 현재 보고 있는 탭에 실제로 렌더링된 화면 전체(스크롤 영역 포함)를 그대로 캡처한다
   const downloadPhaseImage = async () => {
     const node = phaseContentRef.current;
@@ -1207,7 +1215,7 @@ export default function FacilitationBoard() {
                   </button>
                   <button
                     onClick={() => setSelectedProject(p)}
-                    style={{ background: "#faf8f4", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                    style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
                   >
                     열기
                   </button>
@@ -1511,8 +1519,15 @@ export default function FacilitationBoard() {
         onSaveImage={downloadPhaseImage}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {/* 시안의 "녹음 중" 배지 (시각 표시 전용) */}
+            {board.recording && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7, background: "#fdeaea", border: "1px solid #ffcaca", borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 700, color: "#d32f2f" }}>
+                <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: "oaRecPulse 1.1s ease-in-out infinite" }} />
+                녹음 중
+              </span>
+            )}
             <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: myColor.tint || myColor.bg, borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#f2f2f2", borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
             >
               <span style={{ width: 15, height: 15, borderRadius: 999, background: myColor.bg, flexShrink: 0 }} />
               {name}
@@ -1571,7 +1586,7 @@ export default function FacilitationBoard() {
           })}
         </div>
 
-        <div ref={phaseContentRef} style={{ position: "relative", background: "#f6f4f0" }}>
+        <div ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
         <AnimatePresence initial={false}>
         {board.phase === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
@@ -1625,7 +1640,7 @@ export default function FacilitationBoard() {
               {Object.entries(board.users).map(([uname, u]) => (
                 <span
                   key={uname}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: u.color.tint || u.color.bg, borderRadius: 999, padding: "5px 12px 5px 7px", fontSize: 13, fontWeight: 600, color: "#242322" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#f2f2f2", borderRadius: 999, padding: "5px 12px 5px 7px", fontSize: 13, fontWeight: 600, color: "#242322" }}
                 >
                   <span style={{ width: 16, height: 16, borderRadius: 999, background: u.color.bg, flexShrink: 0 }} />
                   {uname}
@@ -1639,11 +1654,26 @@ export default function FacilitationBoard() {
                 투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {/* 시안의 녹음 토글 (시각 표시 전용 — 실제 오디오 녹음은 하지 않음) */}
                 <button
-                  onClick={addTopic}
-                  style={{ padding: "8px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" }}
+                  onClick={toggleRecording}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    padding: "8px 14px",
+                    borderRadius: 9,
+                    border: `1px solid ${board.recording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
+                    background: board.recording ? "#fdeaea" : "#fff",
+                    color: board.recording ? "#d32f2f" : "#242322",
+                    cursor: "pointer",
+                    fontSize: 13,
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                  }}
                 >
-                  + 의견 보드
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: board.recording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+                  {board.recording ? "녹음 중지" : "녹음 시작"}
                 </button>
                 <button
                   data-guide="merge"
@@ -1737,7 +1767,7 @@ export default function FacilitationBoard() {
                         <button
                           data-guide="add-note"
                           onClick={() => createBlankNote(topic.id)}
-                          style={{ padding: "7px 13px", borderRadius: 9, border: "1px dashed rgba(36,35,34,.22)", background: "#faf8f4", color: "#57534e", fontWeight: 600, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
+                          style={{ padding: "7px 13px", borderRadius: 9, border: "1px dashed rgba(36,35,34,.22)", background: "#ffffff", color: "#57534e", fontWeight: 600, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
                         >
                           + 포스트잇
                         </button>
@@ -1775,7 +1805,7 @@ export default function FacilitationBoard() {
                       )}
                       {/* 1번: 보류된 포스트잇은 일반 포스트잇 아래에 별도 구획으로 고정 */}
                       {parkedNotes.length > 0 && (
-                        <div style={{ border: "1px dashed rgba(36,35,34,.18)", borderRadius: 12, padding: "12px 12px 12px", background: "#faf8f4" }}>
+                        <div style={{ border: "1px dashed rgba(36,35,34,.18)", borderRadius: 12, padding: "12px 12px 12px", background: "#ffffff" }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", marginBottom: 10, paddingLeft: 2 }}>⏸ 보류된 의견</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                             <AnimatePresence mode="popLayout">{parkedNotes.map(renderNoteCard)}</AnimatePresence>
@@ -1789,6 +1819,23 @@ export default function FacilitationBoard() {
                   </div>
                 );
               })}
+
+              {/* 시안처럼 의견 보드 추가 버튼을 보드 목록 맨 아래에 전체폭 점선 버튼으로 배치 */}
+              <button
+                onClick={addTopic}
+                style={{
+                  background: "none",
+                  border: "1.5px dashed rgba(36,35,34,.2)",
+                  borderRadius: 14,
+                  padding: 16,
+                  fontSize: 15,
+                  fontWeight: 600,
+                  color: "#8a857f",
+                  cursor: "pointer",
+                }}
+              >
+                + 새 의견 보드
+              </button>
             </div>
 
             {/* 1번: 보류함. 원래 보드 자리에는 그대로 남기고(위 parkedNotes 구획에 포함), 전체 프로젝트 기준으로 모아 보여주는 접이식 섹션 */}
@@ -1811,7 +1858,7 @@ export default function FacilitationBoard() {
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   📥 보류함
-                  <span style={{ background: "#f0ede8", color: "#8a857f", borderRadius: 999, padding: "1px 9px", fontSize: 12, fontWeight: 700 }}>{parkedNotesAll.length}</span>
+                  <span style={{ background: "#eeeeee", color: "#8a857f", borderRadius: 999, padding: "1px 9px", fontSize: 12, fontWeight: 700 }}>{parkedNotesAll.length}</span>
                 </span>
                 <span style={{ fontSize: 13, color: "#8a857f", transform: parkingOpen ? "rotate(180deg)" : "rotate(0)", transition: "transform .15s" }}>▾</span>
               </button>
@@ -1943,7 +1990,7 @@ export default function FacilitationBoard() {
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#f6f4f0", borderRadius: 999, padding: "3px 10px", fontSize: 13, fontWeight: 600, color: "#8a857f" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#f2f2f2", borderRadius: 999, padding: "3px 10px", fontSize: 13, fontWeight: 600, color: "#8a857f" }}>
                           원본 : {topicTitle}
                         </span>
                         <button
@@ -1968,6 +2015,7 @@ export default function FacilitationBoard() {
                           suspendPollRef.current = false;
                           commitNoteText(n.id);
                         }}
+                        placeholder="문제 문구 — 무엇이 문제인가요? (원본 포스트잇과 연동)"
                         style={{ width: "100%", border: "none", borderBottom: "1px solid transparent", resize: "none", overflow: "hidden", fontSize: 16.5, fontWeight: 700, color: "#242322", outline: "none", padding: "2px 0 6px", boxSizing: "border-box", lineHeight: 1.4 }}
                       />
                       <textarea
@@ -2054,7 +2102,7 @@ export default function FacilitationBoard() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: "-.01em", marginBottom: p.description ? 4 : 8 }}>{p.text}</div>
                           {p.description && <div style={{ fontSize: 14, color: "#8a857f", marginBottom: 9 }}>{p.description}</div>}
-                          <div style={{ height: 8, background: "#f0ede8", borderRadius: 999, overflow: "hidden", marginBottom: 9 }}>
+                          <div style={{ height: 8, background: "#eeeeee", borderRadius: 999, overflow: "hidden", marginBottom: 9 }}>
                             <div style={{ height: "100%", borderRadius: 999, background: first ? "#8a7cf0" : "#c4c4c4", width: `${Math.round((voters.length / maxV) * 100)}%` }} />
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

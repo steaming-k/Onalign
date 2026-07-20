@@ -2045,42 +2045,44 @@ export default function FacilitationBoard() {
 
         {board.phase === "voting" && (
           <motion.div key="voting" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
               <div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 4px" }}>우선순위 결과</h2>
                 <p style={{ fontSize: 13.5, color: "#8a857f", margin: 0 }}>
                   득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표
                 </p>
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <button
-                  onClick={() => setPhase("opinion")}
-                  style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  취소
-                </button>
-                <button
-                  onClick={() => setPhase("opinion")}
-                  style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: "#242322", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  투표하기
-                </button>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
-                <button
-                  onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
-                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                >
-                  −
-                </button>
-                <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
-                <button
-                  onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
-                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                >
-                  +
-                </button>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
+                  <button
+                    onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
+                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                  >
+                    −
+                  </button>
+                  <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
+                  <button
+                    onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
+                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                  >
+                    +
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button
+                    onClick={() => setPhase("opinion")}
+                    style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                  >
+                    취소
+                  </button>
+                  <button
+                    onClick={() => setPhase("opinion")}
+                    style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: "#242322", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                  >
+                    투표하기
+                  </button>
+                </div>
               </div>
             </div>
             {rankedProblems.length === 0 && (

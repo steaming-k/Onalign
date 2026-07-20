@@ -2052,37 +2052,21 @@ export default function FacilitationBoard() {
                   득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표
                 </p>
               </div>
-              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
-                  <button
-                    onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
-                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                  >
-                    −
-                  </button>
-                  <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
-                  <button
-                    onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
-                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                  >
-                    +
-                  </button>
-                </div>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <button
-                    onClick={() => setPhase("opinion")}
-                    style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                  >
-                    취소
-                  </button>
-                  <button
-                    onClick={() => setPhase("opinion")}
-                    style={{ padding: "10px 18px", borderRadius: 9, border: "none", background: "#242322", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                  >
-                    투표하기
-                  </button>
-                </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
+                <button
+                  onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
+                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                >
+                  −
+                </button>
+                <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
+                <button
+                  onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
+                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                >
+                  +
+                </button>
               </div>
             </div>
             {rankedProblems.length === 0 && (
@@ -2097,6 +2081,14 @@ export default function FacilitationBoard() {
                   {rankedProblems.map((p, i) => {
                     const voters = board.votes[p.id] || [];
                     const first = i === 0 && voters.length > 0;
+                    // 디자인(Onalign.dc.html) 반영: 카드마다 투표 토글 버튼.
+                    // 투표함 -> 어두운색(취소 가능), 투표 안 함 & 투표권 남음 -> 보라색, 투표권 소진 -> 비활성 회색.
+                    const iVoted = voters.includes(name);
+                    const canVote = votesLeft > 0;
+                    const voteDisabled = !iVoted && !canVote;
+                    const voteBtnBg = iVoted ? "#242322" : canVote ? "#5b4dde" : "#f0ede8";
+                    const voteBtnFg = iVoted ? "#fff" : canVote ? "#fff" : "#b0aba4";
+                    const voteBtnBorder = iVoted ? "#242322" : canVote ? "#5b4dde" : "rgba(36,35,34,.08)";
                     return (
                       <div
                         key={p.id}
@@ -2131,6 +2123,25 @@ export default function FacilitationBoard() {
                             <span style={{ fontSize: 12.5, color: "#8a857f", fontWeight: 600 }}>{voters.length}표</span>
                           </div>
                         </div>
+                        <button
+                          onClick={() => toggleVote(p.id)}
+                          disabled={voteDisabled}
+                          title={voteDisabled ? "투표권을 모두 사용했습니다" : iVoted ? "투표 취소" : "투표"}
+                          style={{
+                            background: voteBtnBg,
+                            color: voteBtnFg,
+                            border: `1px solid ${voteBtnBorder}`,
+                            borderRadius: 9,
+                            padding: "9px 15px",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: voteDisabled ? "not-allowed" : "pointer",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {iVoted ? "투표 취소" : "투표"}
+                        </button>
                       </div>
                     );
                   })}

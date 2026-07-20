@@ -706,6 +706,17 @@ export default function FacilitationBoard() {
   const [confirmState, setConfirmState] = useState(null); // { title, message, confirmLabel, onConfirm }
   const [docType, setDocType] = useState("process"); // "문서" 탭에서 선택한 문서 종류: 과정 | 결과(TOP 5)
   const [parkingOpen, setParkingOpen] = useState(false); // 보류함 접이식 섹션 열림 여부 (기본 닫힘)
+  // ===== 음성 녹음 → 텍스트 변환 (Web Speech API, 마이크 입력 기준) =====
+  // recording 상태(board.recording)는 참여자 모두에게 보이는 공유 배지지만, 실제 음성 인식은
+  // "녹음 버튼을 누른 이 브라우저"에서만 로컬로 돌아간다. 인식 결과도 이 브라우저에 로컬로 쌓인다.
+  const [micRecording, setMicRecording] = useState(false); // 이 브라우저에서 실제 인식 중인지
+  const [transcript, setTranscript] = useState(""); // 확정된 인식 텍스트(누적)
+  const [interim, setInterim] = useState(""); // 인식 중인 임시 텍스트(아직 확정 전)
+  const [transcriptOpen, setTranscriptOpen] = useState(false); // 녹음 결과 패널 열림 여부
+  const [speechSupported, setSpeechSupported] = useState(true); // 브라우저가 Web Speech API를 지원하는지
+  const recognitionRef = useRef(null); // SpeechRecognition 인스턴스
+  const transcriptRef = useRef(""); // onresult 콜백에서 최신 확정 텍스트를 참조하기 위한 ref
+  const wantRecordingRef = useRef(false); // 사용자가 "녹음 중"을 의도하는지 (자동 재시작 판단용)
   const boardRef = useRef(board);
   boardRef.current = board;
   // 드래그 중이거나 포스트잇을 편집 중일 때는 2초 폴링이 로컬 변경을 덮어쓰지 않도록 잠시 멈춘다
@@ -1075,13 +1086,161 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, votesPerUser: n });
   };
 
-  // 시안(Onalign.dc.html)의 녹음 토글. 실제 오디오 녹음은 하지 않고, "녹음 중" 상태만
-  // 보드에 공유해서 참여자 누구나 켤 수 있고 모두의 화면 상단에 배지로 보이게 한다(시각 표시 전용).
+  // 브라우저의 SpeechRecognition 생성자 (크롬/엣지 등은 webkit 접두어 사용)
+  const getSpeechRecognition = () =>
+    typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
+
+  // 마이크 음성 인식 시작. Web Speech API는 오직 마이크 입력만 인식한다
+  // (탭/시스템 오디오는 이 API로 직접 캡처 불가). 온라인 회의라도 스피커로 나오는 소리를
+  // 마이크가 음향적으로 함께 주워 담아 텍스트화된다.
+  const startRecognition = () => {
+    const SR = getSpeechRecognition();
+    if (!SR) {
+      setSpeechSupported(false);
+      return;
+    }
+    const recognition = new SR();
+    recognition.lang = "ko-KR";
+    recognition.continuous = true; // 말이 잠깐 끊겨도 계속 듣는다
+    recognition.interimResults = true; // 확정 전 임시 결과도 실시간으로 보여준다
+
+    recognition.onresult = (event) => {
+      let finalChunk = "";
+      let interimChunk = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) finalChunk += res[0].transcript;
+        else interimChunk += res[0].transcript;
+      }
+      if (finalChunk) {
+        // 확정 문장은 누적. 문장 사이에 공백을 넣어 붙는 것을 막는다.
+        const next = (transcriptRef.current ? transcriptRef.current + " " : "") + finalChunk.trim();
+        transcriptRef.current = next;
+        setTranscript(next);
+      }
+      setInterim(interimChunk);
+    };
+
+    recognition.onerror = (event) => {
+      // no-speech / aborted 등은 흔한 일이므로 조용히 넘어가고, 권한 거부만 사용자에게 알린다
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        wantRecordingRef.current = false;
+        setMicRecording(false);
+        setConfirmState({
+          title: "마이크 권한 필요",
+          message: "브라우저에서 마이크 사용이 차단되어 있습니다. 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.",
+          confirmLabel: "확인",
+          onConfirm: () => setConfirmState(null),
+        });
+      }
+    };
+
+    // continuous라도 브라우저가 일정 시간 후 자동 종료할 수 있다.
+    // 사용자가 여전히 "녹음 중"을 원하면 자동으로 다시 시작해 끊김 없이 이어 듣는다.
+    recognition.onend = () => {
+      if (wantRecordingRef.current) {
+        try {
+          recognition.start();
+        } catch (e) {
+          /* 이미 시작된 경우 등은 무시 */
+        }
+      } else {
+        setMicRecording(false);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setMicRecording(true);
+    } catch (e) {
+      /* 중복 start 예외 무시 */
+    }
+  };
+
+  const stopRecognition = () => {
+    wantRecordingRef.current = false;
+    const recognition = recognitionRef.current;
+    if (recognition) {
+      try {
+        recognition.stop();
+      } catch (e) {
+        /* noop */
+      }
+    }
+    setMicRecording(false);
+    setInterim("");
+  };
+
+  // 녹음 토글. board.recording은 참여자 모두에게 보이는 공유 "녹음 중" 배지이고,
+  // 실제 음성 인식(startRecognition)은 버튼을 누른 이 브라우저에서만 로컬로 동작한다.
   const toggleRecording = async () => {
+    if (!micRecording) {
+      const SR = getSpeechRecognition();
+      if (!SR) {
+        setSpeechSupported(false);
+        setConfirmState({
+          title: "지원하지 않는 브라우저",
+          message: "이 브라우저는 음성 인식(Web Speech API)을 지원하지 않습니다. Chrome 또는 Edge에서 이용해 주세요.",
+          confirmLabel: "확인",
+          onConfirm: () => setConfirmState(null),
+        });
+        return;
+      }
+      // 새 녹음을 시작할 때 이전 결과 위에 이어서 쌓고 싶다면 유지, 아니라면 초기화.
+      // 여기서는 매 녹음을 새로 시작하되, 기존 텍스트가 있으면 이어 붙인다.
+      wantRecordingRef.current = true;
+      setTranscriptOpen(true);
+      startRecognition();
+    } else {
+      stopRecognition();
+      setTranscriptOpen(true); // 중지 시 결과 패널을 확실히 보여준다
+    }
+    // 공유 배지 갱신
     await loadBoard();
     const current = boardRef.current;
-    await saveBoard({ ...current, recording: !current.recording });
+    await saveBoard({ ...current, recording: !micRecording });
   };
+
+  // 녹음 결과 텍스트를 새 포스트잇(의견)으로 저장 -> 회의록을 그대로 보드로 넘길 수 있다
+  const saveTranscriptAsNote = async () => {
+    const text = transcriptRef.current.trim();
+    if (!text || !name) return;
+    await loadBoard();
+    const current = boardRef.current;
+    const topicId = current.topics[0]?.id;
+    const note = { id: uid(), text, authors: [name], topicId, isProblem: false, isParked: false };
+    await saveBoard({ ...current, notes: [...current.notes, note] });
+    setTranscriptOpen(false);
+  };
+
+  const copyTranscript = async () => {
+    try {
+      await navigator.clipboard.writeText(transcriptRef.current.trim());
+    } catch (e) {
+      /* 클립보드 권한 없을 때 조용히 무시 */
+    }
+  };
+
+  const clearTranscript = () => {
+    transcriptRef.current = "";
+    setTranscript("");
+    setInterim("");
+  };
+
+  // 컴포넌트 언마운트 시 인식이 계속 돌지 않도록 정리
+  useEffect(() => {
+    return () => {
+      wantRecordingRef.current = false;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          /* noop */
+        }
+      }
+    };
+  }, []);
 
   // "이미지로 저장": 현재 보고 있는 탭에 실제로 렌더링된 화면 전체(스크롤 영역 포함)를 그대로 캡처한다
   const downloadPhaseImage = async () => {
@@ -1654,7 +1813,7 @@ export default function FacilitationBoard() {
                 투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {/* 시안의 녹음 토글 (시각 표시 전용 — 실제 오디오 녹음은 하지 않음) */}
+                {/* 녹음 토글: 마이크 음성을 Web Speech API로 실시간 텍스트화한다 */}
                 <button
                   onClick={toggleRecording}
                   style={{
@@ -1663,18 +1822,40 @@ export default function FacilitationBoard() {
                     gap: 7,
                     padding: "8px 14px",
                     borderRadius: 9,
-                    border: `1px solid ${board.recording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
-                    background: board.recording ? "#fdeaea" : "#fff",
-                    color: board.recording ? "#d32f2f" : "#242322",
+                    border: `1px solid ${micRecording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
+                    background: micRecording ? "#fdeaea" : "#fff",
+                    color: micRecording ? "#d32f2f" : "#242322",
                     cursor: "pointer",
                     fontSize: 13,
                     fontWeight: 700,
                     whiteSpace: "nowrap",
                   }}
                 >
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: board.recording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
-                  {board.recording ? "녹음 중지" : "녹음 시작"}
+                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: micRecording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+                  {micRecording ? "녹음 중지" : "녹음 시작"}
                 </button>
+                {/* 녹음 결과(회의록) 다시 보기: 텍스트가 있을 때만 노출 */}
+                {!micRecording && transcript && !transcriptOpen && (
+                  <button
+                    onClick={() => setTranscriptOpen(true)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "8px 12px",
+                      borderRadius: 9,
+                      border: "1px solid rgba(36,35,34,.14)",
+                      background: "#fff",
+                      color: "#242322",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    📝 녹음 텍스트
+                  </button>
+                )}
                 <button
                   data-guide="merge"
                   onClick={() => {
@@ -2374,6 +2555,99 @@ export default function FacilitationBoard() {
       </div>
 
       <GuideCoach phase={board.phase} onGotoScreen={setPhase} />
+
+      {/* 녹음 결과(회의록) 패널: 우측 하단 고정. 녹음 중이면 실시간 자막, 중지 후엔 결과 편집·저장 */}
+      <AnimatePresence>
+        {transcriptOpen && (
+          <motion.div
+            key="transcript-panel"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.22, ease: EASE }}
+            style={{
+              position: "fixed",
+              right: 20,
+              bottom: 20,
+              width: "min(420px, calc(100vw - 40px))",
+              maxHeight: "min(60vh, 520px)",
+              background: "#fff",
+              border: "1px solid rgba(36,35,34,.12)",
+              borderRadius: 16,
+              boxShadow: "0 12px 40px rgba(0,0,0,.22)",
+              zIndex: 200,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "14px 16px", borderBottom: "1px solid rgba(36,35,34,.08)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                {micRecording && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: "oaRecPulse 1.1s ease-in-out infinite", flexShrink: 0 }} />}
+                <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: "nowrap" }}>
+                  {micRecording ? "녹음 중 · 실시간 변환" : "녹음 텍스트"}
+                </span>
+              </div>
+              <button
+                onClick={() => setTranscriptOpen(false)}
+                title="닫기"
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#a19c95", fontSize: 18, lineHeight: 1, padding: 4 }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ padding: "14px 16px", overflowY: "auto", flex: 1 }}>
+              {!transcript && !interim ? (
+                <div style={{ color: "#a19c95", fontSize: 13.5, lineHeight: 1.6 }}>
+                  {micRecording
+                    ? "말을 시작하면 여기에 실시간으로 텍스트가 나타납니다. (온라인 회의라면 스피커 볼륨을 켜두세요)"
+                    : "아직 변환된 내용이 없습니다. '녹음 시작'을 눌러 마이크 음성을 텍스트로 변환하세요."}
+                </div>
+              ) : (
+                <div style={{ fontSize: 14, lineHeight: 1.7, whiteSpace: "pre-wrap", color: "#242322" }}>
+                  {transcript}
+                  {interim && <span style={{ color: "#a19c95" }}>{transcript ? " " : ""}{interim}</span>}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(36,35,34,.08)", background: "#faf9f7" }}>
+              {!micRecording && (
+                <button
+                  onClick={toggleRecording}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: 999, background: "#ff4242" }} />
+                  이어서 녹음
+                </button>
+              )}
+              <button
+                onClick={copyTranscript}
+                disabled={!transcript}
+                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: transcript ? "#242322" : "#c4bfb8", cursor: transcript ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                복사
+              </button>
+              <button
+                onClick={saveTranscriptAsNote}
+                disabled={!transcript}
+                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: transcript ? "#242322" : "#c4bfb8", cursor: transcript ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                포스트잇으로 저장
+              </button>
+              <button
+                onClick={clearTranscript}
+                disabled={!transcript || micRecording}
+                style={{ marginLeft: "auto", padding: "8px 13px", borderRadius: 8, border: "none", background: "none", color: transcript && !micRecording ? "#a19c95" : "#d5d1cb", cursor: transcript && !micRecording ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                내용 지우기
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <ConfirmDialog
         open={!!confirmState}
         title={confirmState?.title}

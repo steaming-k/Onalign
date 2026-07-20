@@ -1215,7 +1215,7 @@ export default function FacilitationBoard() {
                   </button>
                   <button
                     onClick={() => setSelectedProject(p)}
-                    style={{ background: "#faf8f4", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                    style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
                   >
                     열기
                   </button>
@@ -1527,7 +1527,7 @@ export default function FacilitationBoard() {
               </span>
             )}
             <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: myColor.tint || myColor.bg, borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#f2f2f2", borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
             >
               <span style={{ width: 15, height: 15, borderRadius: 999, background: myColor.bg, flexShrink: 0 }} />
               {name}
@@ -1640,7 +1640,7 @@ export default function FacilitationBoard() {
               {Object.entries(board.users).map(([uname, u]) => (
                 <span
                   key={uname}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: u.color.tint || u.color.bg, borderRadius: 999, padding: "5px 12px 5px 7px", fontSize: 13, fontWeight: 600, color: "#242322" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#f2f2f2", borderRadius: 999, padding: "5px 12px 5px 7px", fontSize: 13, fontWeight: 600, color: "#242322" }}
                 >
                   <span style={{ width: 16, height: 16, borderRadius: 999, background: u.color.bg, flexShrink: 0 }} />
                   {uname}
@@ -1767,7 +1767,7 @@ export default function FacilitationBoard() {
                         <button
                           data-guide="add-note"
                           onClick={() => createBlankNote(topic.id)}
-                          style={{ padding: "7px 13px", borderRadius: 9, border: "1px dashed rgba(36,35,34,.22)", background: "#faf8f4", color: "#57534e", fontWeight: 600, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
+                          style={{ padding: "7px 13px", borderRadius: 9, border: "1px dashed rgba(36,35,34,.22)", background: "#ffffff", color: "#57534e", fontWeight: 600, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
                         >
                           + 포스트잇
                         </button>
@@ -1805,7 +1805,7 @@ export default function FacilitationBoard() {
                       )}
                       {/* 1번: 보류된 포스트잇은 일반 포스트잇 아래에 별도 구획으로 고정 */}
                       {parkedNotes.length > 0 && (
-                        <div style={{ border: "1px dashed rgba(36,35,34,.18)", borderRadius: 12, padding: "12px 12px 12px", background: "#faf8f4" }}>
+                        <div style={{ border: "1px dashed rgba(36,35,34,.18)", borderRadius: 12, padding: "12px 12px 12px", background: "#ffffff" }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", marginBottom: 10, paddingLeft: 2 }}>⏸ 보류된 의견</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
                             <AnimatePresence mode="popLayout">{parkedNotes.map(renderNoteCard)}</AnimatePresence>
@@ -1858,7 +1858,7 @@ export default function FacilitationBoard() {
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   📥 보류함
-                  <span style={{ background: "#f0ede8", color: "#8a857f", borderRadius: 999, padding: "1px 9px", fontSize: 12, fontWeight: 700 }}>{parkedNotesAll.length}</span>
+                  <span style={{ background: "#eeeeee", color: "#8a857f", borderRadius: 999, padding: "1px 9px", fontSize: 12, fontWeight: 700 }}>{parkedNotesAll.length}</span>
                 </span>
                 <span style={{ fontSize: 13, color: "#8a857f", transform: parkingOpen ? "rotate(180deg)" : "rotate(0)", transition: "transform .15s" }}>▾</span>
               </button>
@@ -1990,7 +1990,7 @@ export default function FacilitationBoard() {
                     </span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 9, flexWrap: "wrap" }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#f6f4f0", borderRadius: 999, padding: "3px 10px", fontSize: 13, fontWeight: 600, color: "#8a857f" }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#f2f2f2", borderRadius: 999, padding: "3px 10px", fontSize: 13, fontWeight: 600, color: "#8a857f" }}>
                           원본 : {topicTitle}
                         </span>
                         <button
@@ -2102,7 +2102,7 @@ export default function FacilitationBoard() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 16.5, fontWeight: 700, letterSpacing: "-.01em", marginBottom: p.description ? 4 : 8 }}>{p.text}</div>
                           {p.description && <div style={{ fontSize: 14, color: "#8a857f", marginBottom: 9 }}>{p.description}</div>}
-                          <div style={{ height: 8, background: "#f0ede8", borderRadius: 999, overflow: "hidden", marginBottom: 9 }}>
+                          <div style={{ height: 8, background: "#eeeeee", borderRadius: 999, overflow: "hidden", marginBottom: 9 }}>
                             <div style={{ height: "100%", borderRadius: 999, background: first ? "#8a7cf0" : "#c4c4c4", width: `${Math.round((voters.length / maxV) * 100)}%` }} />
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

@@ -542,9 +542,11 @@ const TOUR_STEPS = [
   { target: "vote-status", screen: "opinion", text: "문제로 표시된 의견에 투표하세요" },
   { target: "problem-area", screen: "problem", text: "문제 문구를 여기서 다듬으세요" },
   { target: "vote-area", screen: "voting", text: "득표순 결과를 확인하세요" },
-  { target: "save-image", screen: "voting", text: "결과를 문서·이미지로 남겨보세요" },
-  { target: "doc-type-process", screen: "document", text: "과정 문서에서는 의견 작성부터 문제 정리까지의 진행 과정을 확인할 수 있어요" },
-  { target: "doc-type-result", screen: "document", text: "결과 문서(문제 우선순위 TOP 5)에서는 최종 우선순위 TOP 5만 간추려 볼 수 있어요" },
+  { target: "retro-priority", screen: "retro", text: "회고 단계예요. 우선순위로 정한 문제들이 이번에 해결됐는지 여기서 함께 점검하세요 (필요 없으면 토글을 꺼도 됩니다)" },
+  { target: "retro-kpt", screen: "retro", text: "각자 Keep·Problem·Try를 적고 '완료'를 누르세요. 완료한 사람의 회고가 문서에 자동으로 담기고, 완료 후에도 수정하면 문서에 바로 반영돼요" },
+  { target: "doc-type-process", screen: "document", text: "과정 문서에는 표준 정보(목적·배경·추진 방향·기대 효과)와 의견·문제 정리, 완료된 회고까지 한 흐름으로 정리돼요" },
+  { target: "doc-type-result", screen: "document", text: "결과 문서에는 우선순위 TOP 5와 해결여부, 완료된 회고가 간추려 담겨요" },
+  { target: "doc-download", screen: "document", text: "완성된 문서를 이미지·HTML·마크다운으로 저장해 팀과 공유하세요" },
 ];
 
 function guideDoneThisSession() {
@@ -813,7 +815,7 @@ function TopBar({ onProjects, onSaveImage, right }) {
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              이미지로 저장
+              전체 화면 이미지로 저장
             </button>
           )}
           {right}
@@ -2328,7 +2330,7 @@ export default function FacilitationBoard() {
         {board.phase === "problem" && (
           <motion.div key="problem" {...fadeSlide}>
             {/* STEP 2 배너 */}
-            <div data-guide="problem-area" style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#bcd9ee", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
                 STEP 2<br />·<br />문제 정리
               </div>
@@ -2343,7 +2345,7 @@ export default function FacilitationBoard() {
                 <br />의견 작성 탭에서 "문제로"를 눌러 추가하세요.
               </div>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div {...(problemNotesAll.length > 0 && { "data-guide": "problem-area" })} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {problemNotesAll.map((n, i) => {
                 const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
                 return (
@@ -2528,7 +2530,7 @@ export default function FacilitationBoard() {
             </div>
 
             {/* 우선순위 해결여부 점검 토글 (누구나 켜고 끌 수 있음, 기본 ON) */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 12, padding: "14px 18px", marginBottom: 16, flexWrap: "wrap" }}>
+            <div data-guide="retro-priority" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 12, padding: "14px 18px", marginBottom: 16, flexWrap: "wrap" }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 700 }}>우선순위 해결여부 점검</div>
                 <div style={{ fontSize: 13, color: "#8a857f", marginTop: 2 }}>우선순위 결과에서 정한 문제들이 이번에 해결됐는지 함께 확인합니다.</div>
@@ -2606,7 +2608,7 @@ export default function FacilitationBoard() {
             )}
 
             {/* 참여자별 KPT 입력 칸 (참여자 수만큼, 본인 칸만 편집 가능) */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+            <div data-guide="retro-kpt" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
               {Object.entries(board.users).length === 0 ? (
                 <div style={{ color: "#a19c95", fontSize: 14 }}>참여자가 없습니다.</div>
               ) : (
@@ -2702,7 +2704,7 @@ export default function FacilitationBoard() {
                   결과 문서
                 </button>
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <div data-guide="doc-download" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button
                   onClick={downloadDocImage}
                   style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}

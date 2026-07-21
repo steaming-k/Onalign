@@ -889,20 +889,13 @@ export default function FacilitationBoard() {
   // ===== 음성 녹음 → 텍스트 변환 (Web Speech API, 마이크 입력 기준) =====
   // recording 상태(board.recording)는 참여자 모두에게 보이는 공유 배지지만, 실제 음성 인식은
   // "녹음 버튼을 누른 이 브라우저"에서만 로컬로 돌아간다. 인식 결과도 이 브라우저에 로컬로 쌓인다.
-  // 녹음은 두 종류(마이크는 하나라 한 번에 하나만 켜진다):
-  //  - "postit": 의견 작성 탭의 "녹음 시작". 포스트잇으로 저장하면 버퍼를 비워 다음 녹음이 새로 시작된다.
-  //  - "minutes": 헤더의 "회의록 녹음". 전체 회의를 계속 누적하고 .txt 다운로드 + 문서에 포함된다.
-  const [micRecording, setMicRecording] = useState(false); // 이 브라우저에서 실제 인식이 돌고 있는지(모드 무관)
-  const [recordMode, setRecordMode] = useState(null); // 현재 녹음 모드: "postit" | "minutes" | null
-  const recordModeRef = useRef(null); // onresult 콜백에서 최신 모드를 참조하기 위한 ref
-  const [transcript, setTranscript] = useState(""); // (postit) 확정된 인식 텍스트(누적)
-  const [interim, setInterim] = useState(""); // (postit) 인식 중인 임시 텍스트(아직 확정 전)
-  const [transcriptOpen, setTranscriptOpen] = useState(false); // (postit) 녹음 결과 패널 열림 여부
-  const transcriptRef = useRef(""); // (postit) 콜백에서 최신 확정 텍스트를 참조하기 위한 ref
-  const [minutes, setMinutes] = useState(""); // (minutes) 확정된 회의 녹취록(누적)
-  const [minutesInterim, setMinutesInterim] = useState(""); // (minutes) 인식 중인 임시 텍스트
-  const [minutesOpen, setMinutesOpen] = useState(false); // (minutes) 회의록 패널 열림 여부
-  const minutesRef = useRef(""); // (minutes) 콜백에서 최신 녹취록을 참조하기 위한 ref
+  // 회의록 녹음(헤더): 마이크 음성을 Web Speech API로 실시간 텍스트화해 전체 회의 녹취록을 누적한다.
+  // .txt 다운로드 + 문서 탭 "회의 녹취록" 섹션에 반영된다. (마이크가 하나라 녹음은 이 한 종류만 둔다.)
+  const [micRecording, setMicRecording] = useState(false); // 이 브라우저에서 실제 인식이 돌고 있는지
+  const [minutes, setMinutes] = useState(""); // 확정된 회의 녹취록(누적)
+  const [minutesInterim, setMinutesInterim] = useState(""); // 인식 중인 임시 텍스트(아직 확정 전)
+  const [minutesOpen, setMinutesOpen] = useState(false); // 회의록 패널 열림 여부
+  const minutesRef = useRef(""); // onresult 콜백에서 최신 녹취록을 참조하기 위한 ref
   const [speechSupported, setSpeechSupported] = useState(true); // 브라우저가 Web Speech API를 지원하는지
   const recognitionRef = useRef(null); // SpeechRecognition 인스턴스
   const wantRecordingRef = useRef(false); // 사용자가 "녹음 중"을 의도하는지 (자동 재시작 판단용)
@@ -1350,21 +1343,13 @@ export default function FacilitationBoard() {
         if (res.isFinal) finalChunk += res[0].transcript;
         else interimChunk += res[0].transcript;
       }
-      // 확정 문장은 현재 모드의 버퍼에 누적한다. 문장 사이에 공백을 넣어 붙는 것을 막는다.
-      const mode = recordModeRef.current;
+      // 확정 문장은 회의록 버퍼에 누적한다. 문장 사이에 공백을 넣어 붙는 것을 막는다.
       if (finalChunk) {
-        if (mode === "minutes") {
-          const next = (minutesRef.current ? minutesRef.current + " " : "") + finalChunk.trim();
-          minutesRef.current = next;
-          setMinutes(next);
-        } else {
-          const next = (transcriptRef.current ? transcriptRef.current + " " : "") + finalChunk.trim();
-          transcriptRef.current = next;
-          setTranscript(next);
-        }
+        const next = (minutesRef.current ? minutesRef.current + " " : "") + finalChunk.trim();
+        minutesRef.current = next;
+        setMinutes(next);
       }
-      if (mode === "minutes") setMinutesInterim(interimChunk);
-      else setInterim(interimChunk);
+      setMinutesInterim(interimChunk);
     };
 
     recognition.onerror = (event) => {
@@ -1417,15 +1402,12 @@ export default function FacilitationBoard() {
       }
     }
     setMicRecording(false);
-    setInterim("");
     setMinutesInterim("");
   };
 
-  // 녹음 토글(모드별). 마이크가 하나뿐이라 항상 한 모드만 켜지도록,
-  // 다른 모드가 돌고 있으면 먼저 멈추고 요청한 모드를 시작한다.
-  // board.recording은 참여자 모두에게 보이는 공유 "녹음 중" 배지이고,
+  // 회의록 녹음 토글. board.recording은 참여자 모두에게 보이는 공유 "녹음 중" 배지이고,
   // 실제 음성 인식은 버튼을 누른 이 브라우저에서만 로컬로 동작한다.
-  const toggleRecord = async (mode) => {
+  const toggleRecord = async () => {
     const SR = getSpeechRecognition();
     if (!SR) {
       setSpeechSupported(false);
@@ -1438,64 +1420,22 @@ export default function FacilitationBoard() {
       return;
     }
 
-    const alreadyThisMode = micRecording && recordModeRef.current === mode;
-    // 어떤 경우든 현재 돌던 인식은 멈춘다(모드 전환 포함).
-    if (micRecording) stopRecognition();
-
-    if (alreadyThisMode) {
-      // 이 모드를 끄는 동작
-      recordModeRef.current = null;
-      setRecordMode(null);
+    if (micRecording) {
+      stopRecognition();
     } else {
-      // 이 모드를 켜는 동작(다른 모드였다면 위에서 이미 멈춤)
-      recordModeRef.current = mode;
-      setRecordMode(mode);
       wantRecordingRef.current = true;
       startRecognition();
     }
-    // 방금 켠/끈 모드의 패널은 확실히 보여준다(결과 확인·저장용)
-    if (mode === "minutes") setMinutesOpen(true);
-    else setTranscriptOpen(true);
+    setMinutesOpen(true); // 결과 확인·저장용 패널을 확실히 보여준다
 
-    // 공유 배지 갱신(+ 회의록 모드면 누적 녹취록을 board에 저장해 문서/다른 참여자에 반영)
-    const nowRecording = !alreadyThisMode;
+    // 공유 배지 갱신 + 누적 녹취록을 board에 저장해 문서/다른 참여자에 반영
+    const nowRecording = !micRecording;
     await loadBoard();
     const current = boardRef.current;
-    const patch = { ...current, recording: nowRecording };
-    if (mode === "minutes") patch.minutes = minutesRef.current;
-    await saveBoard(patch);
+    await saveBoard({ ...current, recording: nowRecording, minutes: minutesRef.current });
   };
 
-  // 포스트잇 녹음 결과를 새 포스트잇(의견)으로 저장한다.
-  // 저장 후 버퍼를 비워, 이어서 녹음해도 이전 내용이 다시 포함되지 않게 한다.
-  const saveTranscriptAsNote = async () => {
-    const text = transcriptRef.current.trim();
-    if (!text || !name) return;
-    await loadBoard();
-    const current = boardRef.current;
-    const topicId = current.topics[0]?.id;
-    const note = { id: uid(), text, authors: [name], topicId, isProblem: false, isParked: false };
-    await saveBoard({ ...current, notes: [...current.notes, note] });
-    transcriptRef.current = "";
-    setTranscript("");
-    setInterim("");
-  };
-
-  const copyTranscript = async () => {
-    try {
-      await navigator.clipboard.writeText(transcriptRef.current.trim());
-    } catch (e) {
-      /* 클립보드 권한 없을 때 조용히 무시 */
-    }
-  };
-
-  const clearTranscript = () => {
-    transcriptRef.current = "";
-    setTranscript("");
-    setInterim("");
-  };
-
-  // ===== 회의록(minutes) 전용 액션 =====
+  // ===== 회의록(minutes) 액션 =====
   const copyMinutes = async () => {
     try {
       await navigator.clipboard.writeText(minutesRef.current.trim());
@@ -1529,17 +1469,48 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, minutes: "" });
   };
 
+  // 회의록 단순 정리(외부 API 없이 클라이언트에서만): 반복된 문장과 붙어서 중복된 단어를 걷어낸다.
+  // ※ 요약/핵심 추출이 아니라 "잡음성 중복 제거" 수준이다. 결과는 문서 "회의 녹취록"에 그대로 반영된다.
+  const cleanupMinutes = async () => {
+    const raw = minutesRef.current || "";
+    if (!raw.trim()) return;
+    // 1) 문장 단위로 나눈다(문장부호/줄바꿈 기준). 부호가 없으면 통째로 한 덩어리가 된다.
+    const segments = raw
+      .split(/(?<=[.!?。？！])\s+|\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const seen = new Set();
+    const out = [];
+    for (let seg of segments) {
+      // 2) 붙어서 반복된 동일 단어 축약: "그 그 그 안건" -> "그 안건"
+      //    (\b는 한글에 안 먹으므로, 반복 토큰 뒤가 공백/끝인지 lookahead로 확인)
+      seg = seg.replace(/(\S+)(?:\s+\1(?=\s|$))+/g, "$1").replace(/\s{2,}/g, " ").trim();
+      // 3) 공백·문장부호를 무시한 정규화 기준으로 중복 문장 제거(첫 등장 순서 유지)
+      const norm = seg.replace(/[\s.,!?。、·]/g, "").toLowerCase();
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      out.push(seg);
+    }
+    const cleaned = out.join("\n");
+    if (cleaned === raw) return; // 바뀐 게 없으면 저장 생략
+    minutesRef.current = cleaned;
+    setMinutes(cleaned);
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, minutes: cleaned });
+  };
+
   // 회의록 녹음 중이 아닐 때는 board.minutes(공유 저장본)를 로컬 버퍼에 동기화한다.
   // 이렇게 하면 새로고침·재접속 후에도 회의록 패널과 "이어서 녹음"이 이어진다.
   // (녹음 중에는 로컬이 실시간으로 자라므로 덮어쓰지 않는다.)
   useEffect(() => {
-    if (recordModeRef.current === "minutes") return;
+    if (micRecording) return; // 녹음 중에는 로컬 버퍼가 실시간으로 자라므로 덮어쓰지 않는다
     const bm = board.minutes || "";
     if (bm !== minutesRef.current) {
       minutesRef.current = bm;
       setMinutes(bm);
     }
-  }, [board.minutes]);
+  }, [board.minutes, micRecording]);
 
   // 컴포넌트 언마운트 시 인식이 계속 돌지 않도록 정리
   useEffect(() => {
@@ -1779,9 +1750,7 @@ export default function FacilitationBoard() {
     (a, b) => (board.votes[b.id]?.length || 0) - (board.votes[a.id]?.length || 0)
   );
   const docModel = buildDocModel(selectedProject, board);
-  // 마이크는 하나라 한 모드만 켜진다. 각 UI가 자기 모드의 녹음 상태만 보도록 분리한다.
-  const postitRecording = micRecording && recordMode === "postit";
-  const minutesRecording = micRecording && recordMode === "minutes";
+  const minutesRecording = micRecording; // 녹음은 회의록 한 종류뿐
 
   // 포스트잇 카드 렌더 (문제 그룹/일반 그룹에서 공통 사용)
   const renderNoteCard = (note) => {
@@ -1908,8 +1877,8 @@ export default function FacilitationBoard() {
           />
         )}
 
-        {/* 하단: 작성자(좌) + 상태/투표(우) */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 10 }}>
+        {/* 하단: 작성자(좌) + 상태/투표(우) — 글자 수와 무관하게 카드 맨 아래에 고정 */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: "auto", paddingTop: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(36,35,34,.55)" }}>{note.authors.join(", ")}</span>
           {!mergeMode && (
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1935,7 +1904,7 @@ export default function FacilitationBoard() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {iVoted ? "✓" : "👍"} {voters.length > 0 ? voters.length : ""}
+                  {iVoted ? "✓ 투표" : "투표"} {voters.length > 0 ? voters.length : ""}
                 </button>
               )}
               <button
@@ -2132,50 +2101,6 @@ export default function FacilitationBoard() {
                 투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {/* 포스트잇 녹음 토글: 마이크 음성을 Web Speech API로 실시간 텍스트화한다 */}
-                <button
-                  onClick={() => toggleRecord("postit")}
-                  title="말한 내용을 포스트잇으로 옮기는 녹음"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 7,
-                    padding: "8px 14px",
-                    borderRadius: 9,
-                    border: `1px solid ${postitRecording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
-                    background: postitRecording ? "#fdeaea" : "#fff",
-                    color: postitRecording ? "#d32f2f" : "#242322",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: postitRecording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
-                  {postitRecording ? "포스트잇 녹음 중지" : "포스트잇 녹음"}
-                </button>
-                {/* 포스트잇 녹음 결과 다시 보기: 텍스트가 있을 때만 노출 */}
-                {!postitRecording && transcript && !transcriptOpen && (
-                  <button
-                    onClick={() => setTranscriptOpen(true)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "8px 12px",
-                      borderRadius: 9,
-                      border: "1px solid rgba(36,35,34,.14)",
-                      background: "#fff",
-                      color: "#242322",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    📝 녹음 텍스트
-                  </button>
-                )}
                 <button
                   data-guide="merge"
                   onClick={() => {
@@ -3131,103 +3056,6 @@ export default function FacilitationBoard() {
 
       <GuideCoach phase={board.phase} onGotoScreen={setPhase} />
 
-      {/* 녹음 결과(회의록) 패널: 우측 하단 고정. 녹음 중이면 실시간 자막, 중지 후엔 결과 편집·저장 */}
-      <AnimatePresence>
-        {transcriptOpen && (
-          <motion.div
-            key="transcript-panel"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            transition={{ duration: 0.22, ease: EASE }}
-            style={{
-              position: "fixed",
-              right: 20,
-              bottom: 20,
-              width: "min(420px, calc(100vw - 40px))",
-              maxHeight: "min(60vh, 520px)",
-              background: "#fff",
-              border: "1px solid rgba(36,35,34,.12)",
-              borderRadius: 16,
-              boxShadow: "0 12px 40px rgba(0,0,0,.22)",
-              zIndex: 200,
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "14px 16px", borderBottom: "1px solid rgba(36,35,34,.08)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                {postitRecording && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: "oaRecPulse 1.1s ease-in-out infinite", flexShrink: 0 }} />}
-                <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: "nowrap" }}>
-                  {postitRecording ? "포스트잇 녹음 중 · 실시간 변환" : "포스트잇 녹음 텍스트"}
-                </span>
-              </div>
-              <button
-                onClick={() => setTranscriptOpen(false)}
-                title="닫기"
-                style={{ border: "none", background: "none", cursor: "pointer", color: "#a19c95", fontSize: 18, lineHeight: 1, padding: 4 }}
-              >
-                ×
-              </button>
-            </div>
-
-            <div style={{ padding: "14px 16px", overflowY: "auto", flex: 1 }}>
-              {!transcript && !interim ? (
-                <div style={{ color: "#a19c95", fontSize: 13.5, lineHeight: 1.6 }}>
-                  {postitRecording
-                    ? "말을 시작하면 여기에 실시간으로 텍스트가 나타납니다. (온라인 회의라면 스피커 볼륨을 켜두세요)"
-                    : "아직 변환된 내용이 없습니다. '포스트잇 녹음'을 눌러 마이크 음성을 텍스트로 변환하세요."}
-                </div>
-              ) : (
-                <div style={{ fontSize: 14, lineHeight: 1.7, whiteSpace: "pre-wrap", color: "#242322" }}>
-                  {transcript}
-                  {interim && <span style={{ color: "#a19c95" }}>{transcript ? " " : ""}{interim}</span>}
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(36,35,34,.08)", background: "#faf9f7" }}>
-              {transcript && (
-                <div style={{ width: "100%", fontSize: 12, lineHeight: 1.5, color: "#a19c95" }}>
-                  포스트잇으로 저장하면 이 내용은 비워지고, 이어서 녹음하면 새 내용만 쌓입니다.
-                </div>
-              )}
-              {!postitRecording && (
-                <button
-                  onClick={() => toggleRecord("postit")}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
-                >
-                  <span style={{ width: 8, height: 8, borderRadius: 999, background: "#ff4242" }} />
-                  이어서 녹음
-                </button>
-              )}
-              <button
-                onClick={copyTranscript}
-                disabled={!transcript}
-                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: transcript ? "#242322" : "#c4bfb8", cursor: transcript ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
-              >
-                복사
-              </button>
-              <button
-                onClick={saveTranscriptAsNote}
-                disabled={!transcript}
-                style={{ padding: "8px 13px", borderRadius: 8, border: "none", background: transcript ? "#242322" : "#f0ede8", color: transcript ? "#fff" : "#c4bfb8", cursor: transcript ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
-              >
-                포스트잇으로 저장
-              </button>
-              <button
-                onClick={clearTranscript}
-                disabled={!transcript || postitRecording}
-                style={{ marginLeft: "auto", padding: "8px 13px", borderRadius: 8, border: "none", background: "none", color: transcript && !postitRecording ? "#a19c95" : "#d5d1cb", cursor: transcript && !postitRecording ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
-              >
-                내용 지우기
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* 회의록(minutes) 패널: 헤더 "회의록 녹음"으로 열린다. 전체 회의를 누적하고 .txt·문서로 내보낸다. */}
       <AnimatePresence>
         {minutesOpen && (
@@ -3286,14 +3114,22 @@ export default function FacilitationBoard() {
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(36,35,34,.08)", background: "#faf9f7" }}>
               <div style={{ width: "100%", fontSize: 12, lineHeight: 1.5, color: "#a19c95" }}>
-                녹음을 멈추면 전체 회의록이 문서 탭의 "회의 녹취록"에 자동 반영됩니다.
+                녹음을 멈추면 전체 회의록이 문서 탭의 "회의 녹취록"에 자동 반영됩니다. "중복 정리"는 반복된 문장·단어만 걷어냅니다(요약 아님).
               </div>
               <button
-                onClick={() => toggleRecord("minutes")}
+                onClick={toggleRecord}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: `1px solid ${minutesRecording ? "#ffcaca" : "rgba(36,35,34,.14)"}`, background: minutesRecording ? "#fdeaea" : "#fff", color: minutesRecording ? "#d32f2f" : "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
               >
                 <span style={{ width: 8, height: 8, borderRadius: 999, background: "#ff4242", animation: minutesRecording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
                 {minutesRecording ? "녹음 중지" : minutes ? "이어서 녹음" : "회의록 녹음"}
+              </button>
+              <button
+                onClick={cleanupMinutes}
+                disabled={!minutes || minutesRecording}
+                title="반복된 문장·단어를 제거합니다(요약은 아님)"
+                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: minutes && !minutesRecording ? "#242322" : "#c4bfb8", cursor: minutes && !minutesRecording ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                중복 정리
               </button>
               <button
                 onClick={copyMinutes}

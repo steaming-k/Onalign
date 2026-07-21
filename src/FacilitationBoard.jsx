@@ -150,7 +150,9 @@ function uid() {
 // 내용 높이(scrollHeight)에 맞춰 실제 높이를 매번 다시 맞춰준다
 function autoResizeTextarea(el) {
   if (!el) return;
-  el.style.height = "auto";
+  // "auto"는 rows 기본값(2줄)에 묶여, 한 줄짜리 내용도 2줄 높이를 유지한다.
+  // 0으로 먼저 접은 뒤 scrollHeight를 재면 실제 내용 높이(짧으면 1줄, 길면 그만큼)에 정확히 맞는다.
+  el.style.height = "0px";
   el.style.height = el.scrollHeight + "px";
 }
 

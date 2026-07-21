@@ -25,7 +25,10 @@ const popIn = {
 };
 
 // "이미지로 저장" 파일명에 쓰는 탭별 한글 라벨
-const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", document: "문서" };
+const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", retro: "회고", document: "문서" };
+
+// 회고 탭의 우선순위 해결여부 라벨 (문서 내보내기에서도 공용으로 사용)
+const RESOLUTION_LABELS = { resolved: "해결됨", partial: "부분해결", unresolved: "미해결" };
 
 // 참여자 구분용 6색 파스텔. bg = 포스트잇/색상 점, tint = 참여자 배지의 옅은 배경,
 // text = 포스트잇 위 본문(따뜻한 차콜 통일), border = 색상 점 테두리/보더용.
@@ -81,6 +84,17 @@ const emptyBoard = () => ({
   votesPerUser: 3,
   // 7번: 투표는 note.id 기준으로 집계한다. votes[noteId] = [이름, ...]
   votes: {},
+  // ===== 회고/문서 확장 필드 =====
+  // 회고 KPT: 참여자 이름을 키로 갖는다(users와 동일한 키잉). retros[이름] = { keep, problem, try, done }
+  // done===true인 사람의 내용만 문서에 누적되고, done 후에도 자유롭게 수정 가능(실시간 반영).
+  retros: {},
+  // 회고 탭 상단 "우선순위 해결여부" 섹션 표시 여부 토글 (기본 ON)
+  retroPriorityCheck: true,
+  // 우선순위 문제별 해결여부. priorityResolution[noteId] = "resolved" | "partial" | "unresolved"
+  // (votes/isProblem과 같은 "원본은 note 하나, 여기선 표시·기록만" 패턴)
+  priorityResolution: {},
+  // 문서 표준 필드(프로젝트당 1개). 과정/결과 문서 양쪽에 동일하게 반영된다.
+  docFields: { purpose: "", background: "", direction: "", expected: "" },
 });
 
 // 이전 버전에서 저장된 보드를 열어도 깨지지 않도록 보정한다.
@@ -94,6 +108,11 @@ function normalizeBoard(raw) {
   const firstTopicId = b.topics[0].id;
   b.notes = (b.notes || []).map((n) => ({ ...n, topicId: n.topicId || firstTopicId }));
   b.votes = b.votes || {};
+  // 확장 필드 기본값 보정(구버전 보드 호환)
+  b.retros = b.retros || {};
+  b.retroPriorityCheck = b.retroPriorityCheck !== false; // 저장값 없으면 ON
+  b.priorityResolution = b.priorityResolution || {};
+  b.docFields = { purpose: "", background: "", direction: "", expected: "", ...(b.docFields || {}) };
 
   // ---- 구버전 problems 배열 마이그레이션 ----
   if (Array.isArray(b.problems)) {
@@ -153,7 +172,18 @@ function buildDocModel(project, board) {
     .map((n) => ({ ...n, votes: board.votes[n.id]?.length || 0, voters: board.votes[n.id] || [] }))
     .sort((a, b) => b.votes - a.votes);
   const topRanked = ranked.slice(0, 5);
-  return { participants, notesByTopic, problemNotes, ranked, topRanked };
+  // 문서 표준 필드(프로젝트당 1개) — 과정/결과 문서 공통
+  const docFields = board.docFields || {};
+  // 완료(done)한 참여자의 KPT만 문서에 누적. users 키잉을 그대로 사용해 참여자 순서 유지.
+  const completedRetros = participants
+    .map((p) => ({ name: p.name, color: p.color, ...(board.retros?.[p.name] || {}) }))
+    .filter((r) => r.done);
+  // 회고 탭 토글이 ON일 때만 우선순위 해결여부를 문서에 포함(득표순 문제 + 해결여부)
+  const priorityCheckOn = board.retroPriorityCheck !== false;
+  const resolutionRows = priorityCheckOn
+    ? ranked.map((n) => ({ id: n.id, text: n.text, votes: n.votes, resolution: board.priorityResolution?.[n.id] || "" }))
+    : [];
+  return { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows };
 }
 
 function esc(s) {
@@ -163,9 +193,10 @@ function esc(s) {
 // 다운로드용 자립형 HTML 문서 문자열 생성 (브라우저에서 바로 열람·인쇄 가능)
 // docType: "process"(과정 전체) | "result"(우선순위 TOP 5 결과만)
 function buildDocHtml(project, board, docType = "process") {
-  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
+  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows } = buildDocModel(project, board);
   const dateStr = new Date().toLocaleString("ko-KR");
   const topVote = ranked[0];
+  const nl2br = (s) => esc(s).replace(/\r?\n/g, "<br>");
 
   const style = `
   body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;color:#242424;max-width:860px;margin:0 auto;padding:40px 24px;line-height:1.6}
@@ -180,7 +211,43 @@ function buildDocHtml(project, board, docType = "process") {
   .empty{color:#aaa}
   .rank1 td{background:#fdf3f7}
   .desc{color:#777;font-size:12.5px;margin-top:3px}
+  .retro-name{background:#f2f2f2;font-weight:700}
   footer{margin-top:40px;color:#aaa;font-size:12px;text-align:center}`;
+
+  // 문서 표준 필드(목적/배경/추진 방향/기대 효과) — 과정/결과 문서 공통, 항상 최상단
+  const fieldsSection = `<h2>문서 표준 정보</h2>
+<table><tbody>${[
+    ["목적", docFields.purpose],
+    ["배경", docFields.background],
+    ["추진 방향", docFields.direction],
+    ["기대 효과", docFields.expected],
+  ]
+    .map(([k, v]) => `<tr><th>${k}</th><td>${v && v.trim() ? nl2br(v) : '<span class="empty">—</span>'}</td></tr>`)
+    .join("")}</tbody></table>`;
+
+  // 우선순위 해결여부 (회고 토글 ON일 때만)
+  const resolutionSection = priorityCheckOn
+    ? `<h2>우선순위 해결여부</h2>
+<table><thead><tr><th>#</th><th>문제</th><th>득표</th><th>해결여부</th></tr></thead><tbody>${
+        resolutionRows.length
+          ? resolutionRows
+              .map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.text)}</td><td>${r.votes}표</td><td>${RESOLUTION_LABELS[r.resolution] || '<span class="empty">미정</span>'}</td></tr>`)
+              .join("")
+          : `<tr><td colspan="4" class="empty">우선순위로 정리된 문제가 없습니다.</td></tr>`
+      }</tbody></table>`
+    : "";
+
+  // 회고(KPT) — 완료한 참여자만
+  const retroSection = `<h2>회고 (KPT)</h2>${
+    completedRetros.length
+      ? completedRetros
+          .map(
+            (r) =>
+              `<table style="margin-bottom:16px"><tbody><tr><th class="retro-name" colspan="2">${esc(r.name)}</th></tr><tr><th>Keep</th><td>${r.keep && r.keep.trim() ? nl2br(r.keep) : '<span class="empty">—</span>'}</td></tr><tr><th>Problem</th><td>${r.problem && r.problem.trim() ? nl2br(r.problem) : '<span class="empty">—</span>'}</td></tr><tr><th>Try</th><td>${r.try && r.try.trim() ? nl2br(r.try) : '<span class="empty">—</span>'}</td></tr></tbody></table>`
+          )
+          .join("")
+      : `<p class="empty">완료된 회고가 없습니다.</p>`
+  }`;
 
   if (docType === "result") {
     const overviewRows = [
@@ -208,11 +275,17 @@ function buildDocHtml(project, board, docType = "process") {
 <h1>${esc(project.title)}</h1>
 <div class="sub">Onalign 퍼실리테이션 결과 문서 · ${esc(dateStr)}</div>
 
-<h2>1. 개요</h2>
+${fieldsSection}
+
+<h2>개요</h2>
 <table><tbody>${overviewRows}</tbody></table>
 
-<h2>2. 우선순위 TOP 5 결과</h2>
+<h2>우선순위 TOP 5 결과</h2>
 <table><thead><tr><th>순위</th><th>문제</th><th>득표</th><th>투표자</th></tr></thead><tbody>${topRows}</tbody></table>
+
+${resolutionSection}
+
+${retroSection}
 
 <footer>Generated by Onalign</footer>
 </body></html>`;
@@ -265,17 +338,23 @@ function buildDocHtml(project, board, docType = "process") {
 <h1>${esc(project.title)}</h1>
 <div class="sub">Onalign 퍼실리테이션 과정 문서 · ${esc(dateStr)}</div>
 
-<h2>1. 개요</h2>
+${fieldsSection}
+
+<h2>개요</h2>
 <table><tbody>${overviewRows}</tbody></table>
 
-<h2>2. 참여자</h2>
+<h2>참여자</h2>
 <table><thead><tr><th>이름</th><th>배정 색상</th></tr></thead><tbody>${participantRows}</tbody></table>
 
-<h2>3. 의견 모음 (과정)</h2>
+<h2>의견 모음 (과정)</h2>
 <table><thead><tr><th>주제</th><th>내용</th><th>작성자</th></tr></thead><tbody>${opinionRows}</tbody></table>
 
-<h2>4. 문제 정리 및 부가 설명</h2>
+<h2>문제 정리 및 부가 설명</h2>
 <table><thead><tr><th>#</th><th>문제</th><th>작성자</th></tr></thead><tbody>${problemRows}</tbody></table>
+
+${resolutionSection}
+
+${retroSection}
 
 <footer>Generated by Onalign</footer>
 </body></html>`;
@@ -287,9 +366,50 @@ function mdEsc(s) {
 
 // 다운로드용 마크다운 문서 문자열 생성 (노션·구글독스 등에 붙여넣기 좋은 표 형식)
 function buildDocMarkdown(project, board, docType = "process") {
-  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
+  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows } = buildDocModel(project, board);
   const dateStr = new Date().toLocaleString("ko-KR");
   const topVote = ranked[0];
+
+  // 문서 표준 정보(목적/배경/추진 방향/기대 효과) — 과정/결과 공통, 항상 최상단
+  const fieldsSection = `## 문서 표준 정보
+
+| 항목 | 내용 |
+| --- | --- |
+${[
+    ["목적", docFields.purpose],
+    ["배경", docFields.background],
+    ["추진 방향", docFields.direction],
+    ["기대 효과", docFields.expected],
+  ]
+    .map(([k, v]) => `| ${mdEsc(k)} | ${v && v.trim() ? mdEsc(v) : "—"} |`)
+    .join("\n")}`;
+
+  // 우선순위 해결여부 (회고 토글 ON일 때만)
+  const resolutionSection = priorityCheckOn
+    ? `## 우선순위 해결여부
+
+| # | 문제 | 득표 | 해결여부 |
+| --- | --- | --- | --- |
+${
+        resolutionRows.length
+          ? resolutionRows.map((r, i) => `| ${i + 1} | ${mdEsc(r.text)} | ${r.votes}표 | ${RESOLUTION_LABELS[r.resolution] || "미정"} |`).join("\n")
+          : "| - | 우선순위로 정리된 문제가 없습니다. | - | - |"
+      }`
+    : "";
+
+  // 회고(KPT) — 완료한 참여자만
+  const retroSection = `## 회고 (KPT)
+
+${
+    completedRetros.length
+      ? completedRetros
+          .map(
+            (r) =>
+              `### ${r.name}\n\n| 구분 | 내용 |\n| --- | --- |\n| Keep | ${r.keep && r.keep.trim() ? mdEsc(r.keep) : "—"} |\n| Problem | ${r.problem && r.problem.trim() ? mdEsc(r.problem) : "—"} |\n| Try | ${r.try && r.try.trim() ? mdEsc(r.try) : "—"} |`
+          )
+          .join("\n\n")
+      : "완료된 회고가 없습니다."
+  }`;
 
   if (docType === "result") {
     const overviewRows = [
@@ -314,17 +434,23 @@ function buildDocMarkdown(project, board, docType = "process") {
 
 Onalign 퍼실리테이션 결과 문서 · ${dateStr}
 
-## 1. 개요
+${fieldsSection}
+
+## 개요
 
 | 항목 | 내용 |
 | --- | --- |
 ${overviewRows}
 
-## 2. 우선순위 TOP 5 결과
+## 우선순위 TOP 5 결과
 
 | 순위 | 문제 | 득표 | 투표자 |
 | --- | --- | --- | --- |
 ${topRows}
+
+${resolutionSection}
+
+${retroSection}
 
 ---
 Generated by Onalign
@@ -370,29 +496,35 @@ Generated by Onalign
 
 Onalign 퍼실리테이션 과정 문서 · ${dateStr}
 
-## 1. 개요
+${fieldsSection}
+
+## 개요
 
 | 항목 | 내용 |
 | --- | --- |
 ${overviewRows}
 
-## 2. 참여자
+## 참여자
 
 | 이름 | 배정 색상 |
 | --- | --- |
 ${participantRows}
 
-## 3. 의견 모음 (과정)
+## 의견 모음 (과정)
 
 | 주제 | 내용 | 작성자 |
 | --- | --- | --- |
 ${opinionRows}
 
-## 4. 문제 정리 및 부가 설명
+## 문제 정리 및 부가 설명
 
 | # | 문제 | 작성자 |
 | --- | --- | --- |
 ${problemRows}
+
+${resolutionSection}
+
+${retroSection}
 
 ---
 Generated by Onalign
@@ -929,6 +1061,55 @@ export default function FacilitationBoard() {
     await loadBoard();
     const current = boardRef.current;
     await saveBoard({ ...current, instructions: text });
+  };
+
+  // ===== 회고(KPT) 핸들러 =====
+  // 본인 칸 텍스트를 타이핑하는 동안은 로컬만 갱신(폴링이 지우지 않도록). 포스트잇 편집과 동일한 패턴.
+  const editRetroLocal = (owner, field, value) => {
+    setBoard((prev) => ({
+      ...prev,
+      retros: { ...prev.retros, [owner]: { ...(prev.retros?.[owner] || {}), [field]: value } },
+    }));
+  };
+  // blur 시 최신 원격 상태 위에 내 KPT 텍스트만 반영해 저장(done 등 다른 필드는 원격값 유지).
+  const commitRetro = async (owner) => {
+    const mine = boardRef.current.retros?.[owner] || {};
+    await loadBoard();
+    const current = boardRef.current;
+    const existing = current.retros?.[owner] || {};
+    await saveBoard({
+      ...current,
+      retros: {
+        ...current.retros,
+        [owner]: { ...existing, keep: mine.keep || "", problem: mine.problem || "", try: mine.try || "" },
+      },
+    });
+  };
+  // 개인 단위 완료 토글. 완료해도 잠그지 않으며, 완료된 사람 KPT만 문서에 누적된다.
+  const toggleRetroDone = async (owner) => {
+    await loadBoard();
+    const current = boardRef.current;
+    const existing = current.retros?.[owner] || {};
+    await saveBoard({ ...current, retros: { ...current.retros, [owner]: { ...existing, done: !existing.done } } });
+  };
+  // 우선순위 문제별 해결여부 선택 (누구나 변경 가능)
+  const setPriorityResolution = async (noteId, value) => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, priorityResolution: { ...current.priorityResolution, [noteId]: value } });
+  };
+  // 회고 탭 상단 "우선순위 해결여부" 섹션 표시 토글 (누구나 켜고 끌 수 있음)
+  const toggleRetroPriorityCheck = async () => {
+    await loadBoard();
+    const current = boardRef.current;
+    const on = current.retroPriorityCheck !== false;
+    await saveBoard({ ...current, retroPriorityCheck: !on });
+  };
+  // 문서 표준 필드(목적/배경/추진 방향/기대 효과) 저장. 안내 문구 편집과 동일 패턴(blur 시 저장).
+  const updateDocField = async (field, value) => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, docFields: { ...(current.docFields || {}), [field]: value } });
   };
 
   // 포스트잇 내용을 타이핑하는 동안은 로컬 상태만 갱신 (폴링에 의해 지워지지 않도록)
@@ -1720,6 +1901,7 @@ export default function FacilitationBoard() {
             { key: "opinion", label: "의견 작성" },
             { key: "problem", label: "문제 정리" },
             { key: "voting", label: "우선순위 결과" },
+            { key: "retro", label: "회고" },
             { key: "document", label: "문서" },
           ].map((tab) => {
             const on = board.phase === tab.key;
@@ -2332,6 +2514,154 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
+        {board.phase === "retro" && (
+          <motion.div key="retro" {...fadeSlide}>
+            {/* STEP 5 배너 */}
+            <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#d6c9ee", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
+                STEP 5<br />·<br />회고
+              </div>
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#e7e4df" }}>
+                각자 <b style={{ color: "#fff" }}>Keep · Problem · Try</b>를 적고 "완료"를 눌러 주세요. 완료한 사람의 회고만 문서에 반영됩니다.
+                <br />완료 후에도 자유롭게 수정할 수 있고, 수정하면 문서에도 자동으로 갱신됩니다.
+              </p>
+            </div>
+
+            {/* 우선순위 해결여부 점검 토글 (누구나 켜고 끌 수 있음, 기본 ON) */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 12, padding: "14px 18px", marginBottom: 16, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>우선순위 해결여부 점검</div>
+                <div style={{ fontSize: 13, color: "#8a857f", marginTop: 2 }}>우선순위 결과에서 정한 문제들이 이번에 해결됐는지 함께 확인합니다.</div>
+              </div>
+              <button
+                onClick={toggleRetroPriorityCheck}
+                role="switch"
+                aria-checked={board.retroPriorityCheck !== false}
+                title="우선순위 해결여부 섹션 표시/숨김"
+                style={{
+                  width: 46,
+                  height: 26,
+                  borderRadius: 999,
+                  border: "none",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  background: board.retroPriorityCheck !== false ? "#5b4dde" : "#d5d1cb",
+                  position: "relative",
+                  padding: 0,
+                }}
+              >
+                <span style={{ position: "absolute", top: 3, left: board.retroPriorityCheck !== false ? 23 : 3, width: 20, height: 20, borderRadius: 999, background: "#fff", transition: "left .15s ease", boxShadow: "0 1px 3px rgba(0,0,0,.25)" }} />
+              </button>
+            </div>
+
+            {/* 우선순위 해결여부 목록 (ON일 때만, KPT 칸 위쪽) */}
+            {board.retroPriorityCheck !== false && (
+              <div style={{ marginBottom: 22 }}>
+                {rankedProblems.length === 0 ? (
+                  <div style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 12, padding: "16px 18px", color: "#a19c95", fontSize: 13.5 }}>
+                    우선순위로 정리된 문제가 없습니다. "문제 정리 → 우선순위 결과"에서 먼저 진행하세요.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {rankedProblems.map((p, i) => {
+                      const cur = board.priorityResolution?.[p.id] || "";
+                      return (
+                        <div key={p.id} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 15, fontWeight: 800, color: "#bcbcbc", width: 22, flexShrink: 0, textAlign: "center" }}>{i + 1}</span>
+                          <span style={{ flex: 1, minWidth: 140, fontSize: 14.5, fontWeight: 600 }}>{p.text}</span>
+                          <div style={{ display: "inline-flex", background: "#f2f0ec", borderRadius: 9, padding: 3, gap: 2, flexShrink: 0 }}>
+                            {[
+                              ["resolved", "해결됨", "#1e7a4d"],
+                              ["partial", "부분해결", "#9a6a15"],
+                              ["unresolved", "미해결", "#c0392b"],
+                            ].map(([val, label, activeColor]) => {
+                              const on = cur === val;
+                              return (
+                                <button
+                                  key={val}
+                                  onClick={() => setPriorityResolution(p.id, val)}
+                                  style={{
+                                    border: "none",
+                                    borderRadius: 7,
+                                    padding: "6px 12px",
+                                    fontSize: 12.5,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                    background: on ? "#fff" : "transparent",
+                                    color: on ? activeColor : "#8a857f",
+                                    boxShadow: on ? "0 1px 2px rgba(0,0,0,.12)" : "none",
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 참여자별 KPT 입력 칸 (참여자 수만큼, 본인 칸만 편집 가능) */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+              {Object.entries(board.users).length === 0 ? (
+                <div style={{ color: "#a19c95", fontSize: 14 }}>참여자가 없습니다.</div>
+              ) : (
+                Object.entries(board.users).map(([owner, u]) => {
+                  const mineCell = owner === name;
+                  const r = board.retros?.[owner] || {};
+                  const done = !!r.done;
+                  const col = u.color || PALETTE[0];
+                  const kptField = (field, label, placeholder) => (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#8a857f", marginBottom: 4 }}>{label}</div>
+                      <textarea
+                        value={r[field] || ""}
+                        readOnly={!mineCell}
+                        ref={(el) => autoResizeTextarea(el)}
+                        onInput={(e) => autoResizeTextarea(e.target)}
+                        onChange={mineCell ? (e) => { editRetroLocal(owner, field, e.target.value); autoResizeTextarea(e.target); } : undefined}
+                        onFocus={mineCell ? () => { suspendPollRef.current = true; } : undefined}
+                        onBlur={mineCell ? () => { suspendPollRef.current = false; commitRetro(owner); } : undefined}
+                        placeholder={mineCell ? placeholder : "—"}
+                        style={{ width: "100%", boxSizing: "border-box", border: "1px solid rgba(36,35,34,.12)", borderRadius: 8, padding: "8px 10px", resize: "none", overflow: "hidden", fontSize: 13.5, fontFamily: "inherit", lineHeight: 1.5, outline: "none", minHeight: 34, background: mineCell ? "#fff" : "#faf9f7", color: "#242322" }}
+                      />
+                    </div>
+                  );
+                  return (
+                    <div key={owner} style={{ background: "#fff", border: `1px solid ${done ? "rgba(114,201,172,.6)" : "rgba(36,35,34,.09)"}`, borderRadius: 14, padding: "16px 18px", boxShadow: "0 1px 3px rgba(0,0,0,.04)", display: "flex", flexDirection: "column" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                        <span style={{ width: 15, height: 15, borderRadius: 999, background: col.bg, flexShrink: 0 }} />
+                        <span style={{ fontSize: 14.5, fontWeight: 700 }}>{owner}</span>
+                        {mineCell && <span style={{ fontSize: 11, color: "#8a857f" }}>(나)</span>}
+                        {done && (
+                          <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, background: "#e6f7f1", color: "#1e7a4d", border: "1px solid #a9e6d3", borderRadius: 999, padding: "3px 9px", fontSize: 11.5, fontWeight: 700 }}>
+                            ✓ 완료
+                          </span>
+                        )}
+                      </div>
+                      {kptField("keep", "Keep — 잘된 점", "계속 유지하고 싶은 점")}
+                      {kptField("problem", "Problem — 아쉬운 점", "문제였던 점")}
+                      {kptField("try", "Try — 시도할 점", "다음에 시도해볼 점")}
+                      {mineCell && (
+                        <button
+                          onClick={() => toggleRetroDone(owner)}
+                          style={{ marginTop: 4, alignSelf: "flex-end", padding: "8px 16px", borderRadius: 8, border: done ? "1px solid rgba(36,35,34,.14)" : "none", background: done ? "#fff" : "#242322", color: done ? "#242322" : "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}
+                        >
+                          {done ? "완료 취소" : "완료"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+
         {board.phase === "document" && (
           <motion.div key="document" {...fadeSlide}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
@@ -2404,9 +2734,43 @@ export default function FacilitationBoard() {
               </div>
             </div>
 
+            {/* 문서 표준 필드(목적/배경/추진 방향/기대 효과): 프로젝트당 1개, 과정/결과 공통, 인라인 편집 */}
+            <DocSection title="문서 표준 정보">
+              <DocTable>
+                <tbody>
+                  {[
+                    ["목적", "purpose"],
+                    ["배경", "background"],
+                    ["추진 방향", "direction"],
+                    ["기대 효과", "expected"],
+                  ].map(([label, key]) => (
+                    <tr key={key}>
+                      <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#f2f2f2", width: 120, whiteSpace: "nowrap", verticalAlign: "top" }}>{label}</th>
+                      <td style={{ border: "1px solid #e0e0e0", padding: "6px 12px", verticalAlign: "top" }}>
+                        <textarea
+                          defaultValue={board.docFields?.[key] || ""}
+                          ref={(el) => autoResizeTextarea(el)}
+                          onInput={(e) => autoResizeTextarea(e.target)}
+                          onFocus={() => {
+                            suspendPollRef.current = true;
+                          }}
+                          onBlur={(e) => {
+                            suspendPollRef.current = false;
+                            updateDocField(key, e.target.value);
+                          }}
+                          placeholder={`${label}을(를) 입력하세요`}
+                          style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "inherit", lineHeight: 1.6, outline: "none", minHeight: 24 }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DocTable>
+            </DocSection>
+
             {docType === "process" ? (
               <>
-                <DocSection title="1. 개요">
+                <DocSection title="개요">
                   <DocTable>
                     <tbody>
                       <DocKV k="프로젝트명" v={selectedProject.title} />
@@ -2417,7 +2781,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="2. 참여자">
+                <DocSection title="참여자">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2444,7 +2808,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="3. 의견 모음 (과정)">
+                <DocSection title="의견 모음 (과정)">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2476,7 +2840,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="4. 문제 정리 및 부가 설명">
+                <DocSection title="문제 정리 및 부가 설명">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2506,7 +2870,7 @@ export default function FacilitationBoard() {
               </>
             ) : (
               <>
-                <DocSection title="1. 개요">
+                <DocSection title="개요">
                   <DocTable>
                     <tbody>
                       <DocKV k="프로젝트명" v={selectedProject.title} />
@@ -2516,7 +2880,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="2. 우선순위 TOP 5 결과">
+                <DocSection title="우선순위 TOP 5 결과">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2547,6 +2911,72 @@ export default function FacilitationBoard() {
                 </DocSection>
               </>
             )}
+
+            {/* 우선순위 해결여부 (회고 탭 토글 ON일 때만) — 기존 콘텐츠 뒤에 배치 */}
+            {docModel.priorityCheckOn && (
+              <DocSection title="우선순위 해결여부">
+                <DocTable>
+                  <thead>
+                    <tr>
+                      <DocTh>#</DocTh>
+                      <DocTh>문제</DocTh>
+                      <DocTh>득표</DocTh>
+                      <DocTh>해결여부</DocTh>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {docModel.resolutionRows.length ? (
+                      docModel.resolutionRows.map((r, i) => (
+                        <tr key={r.id}>
+                          <DocTd>{i + 1}</DocTd>
+                          <DocTd>{r.text}</DocTd>
+                          <DocTd>{r.votes}표</DocTd>
+                          <DocTd>{RESOLUTION_LABELS[r.resolution] || <span style={{ color: "#aaa" }}>미정</span>}</DocTd>
+                        </tr>
+                      ))
+                    ) : (
+                      <DocEmpty span={4}>우선순위로 정리된 문제가 없습니다.</DocEmpty>
+                    )}
+                  </tbody>
+                </DocTable>
+              </DocSection>
+            )}
+
+            {/* 회고(KPT) — 완료한 참여자만 누적 표시 */}
+            <DocSection title="회고 (KPT)">
+              {docModel.completedRetros.length ? (
+                docModel.completedRetros.map((r) => (
+                  <div key={r.name} style={{ marginBottom: 14 }}>
+                  <DocTable>
+                    <tbody>
+                      <tr>
+                        <th colSpan={2} style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#f2f2f2", fontWeight: 700 }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 999, background: r.color?.bg || "#ccc" }} />
+                            {r.name}
+                          </span>
+                        </th>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Keep</th>
+                        <DocTd>{r.keep && r.keep.trim() ? r.keep : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Problem</th>
+                        <DocTd>{r.problem && r.problem.trim() ? r.problem : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Try</th>
+                        <DocTd>{r.try && r.try.trim() ? r.try : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                    </tbody>
+                  </DocTable>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "#aaa", fontSize: 14 }}>완료된 회고가 없습니다.</div>
+              )}
+            </DocSection>
             </div>
           </motion.div>
         )}

@@ -929,6 +929,26 @@ export default function FacilitationBoard() {
   // 문서 탭 전용 "이미지로 저장": 다운로드 버튼 등 UI를 빼고 문서 내용(표)만 캡처하기 위한 DOM 참조
   const docContentRef = useRef(null);
 
+  // 폴링으로 마지막에 반영한 보드 원본(JSON 문자열). 값이 그대로면 setBoard를 건너뛰어
+  // 2초마다 전체 트리가 불필요하게 리렌더/리플로우되는 버벅임을 없앤다.
+  const lastBoardRawRef = useRef(null);
+  // 자동 높이 textarea들을 추적한다. 인라인 ref(매 렌더마다 새 함수 → 매 렌더 리플로우) 대신
+  // "마운트 때 1회 + 원격 변경 때만" 높이를 맞춰 입력/유휴 버벅임을 제거한다.
+  const autoSizeEls = useRef(new Set());
+  const autoSizeRef = useCallback((el) => {
+    if (el) {
+      autoSizeEls.current.add(el);
+      autoResizeTextarea(el);
+    }
+  }, []);
+  // 원격 변경(다른 참여자 편집)이 반영된 뒤에만 추적 중인 textarea 높이를 한 번에 다시 맞춘다.
+  const refitAutoSize = useCallback(() => {
+    autoSizeEls.current.forEach((el) => {
+      if (el.isConnected) autoResizeTextarea(el);
+      else autoSizeEls.current.delete(el);
+    });
+  }, []);
+
   // 프로젝트 인덱스 로드 (목록 화면에서 항상 최신 상태 유지)
   const loadProjects = useCallback(async () => {
     try {
@@ -997,13 +1017,19 @@ export default function FacilitationBoard() {
     try {
       const res = await storage.get(boardKeyOf(selectedProject.id), true);
       if (res && res.value) {
-        setBoard(normalizeBoard(JSON.parse(res.value)));
+        // 값이 지난번과 동일하면(내가 방금 저장한 값 포함) 리렌더를 건너뛴다 -> 유휴 시 버벅임 제거
+        if (res.value !== lastBoardRawRef.current) {
+          lastBoardRawRef.current = res.value;
+          setBoard(normalizeBoard(JSON.parse(res.value)));
+          // 원격 변경이 반영됐을 때만 페인트 후 자동높이 textarea를 다시 맞춘다(입력 중에는 실행 안 됨)
+          requestAnimationFrame(() => refitAutoSize());
+        }
       }
     } catch (e) {
       // key not created yet
     }
     setLoaded(true);
-  }, [selectedProject]);
+  }, [selectedProject, refitAutoSize]);
 
   // 보드 상태를 통째로 저장. 여러 하위 키로 쪼개면 동시 수정 시 last-write-wins로 유실될 위험이 커서
   // 하나의 키 안에서 전체 객체를 갱신하는 방식을 쓴다
@@ -1012,7 +1038,10 @@ export default function FacilitationBoard() {
       if (!selectedProject) return;
       setBoard(next);
       try {
-        await storage.set(boardKeyOf(selectedProject.id), JSON.stringify(next), true);
+        const str = JSON.stringify(next);
+        // 방금 저장한 값을 기억해, 다음 폴링이 같은 값을 읽어와도 리렌더하지 않게 한다
+        lastBoardRawRef.current = str;
+        await storage.set(boardKeyOf(selectedProject.id), str, true);
       } catch (e) {
         console.error("저장 실패", e);
       }
@@ -1022,6 +1051,7 @@ export default function FacilitationBoard() {
 
   useEffect(() => {
     if (!selectedProject) return;
+    lastBoardRawRef.current = null; // 프로젝트가 바뀌면 이전 보드 원본 캐시를 비워 새로 로드되게 한다
     loadBoard();
     // 2초 간격 폴링으로 다른 참여자의 변경사항을 반영 (websocket 없이 유사 실시간 구현)
     // 단, 드래그나 텍스트 편집 중에는 건드리지 않는다 -> 안 그러면 끌던 포스트잇이 튀거나 타이핑 중 내용이 사라짐
@@ -1864,7 +1894,7 @@ export default function FacilitationBoard() {
             autoFocus={justCreatedId === note.id}
             value={note.text}
             placeholder="자유롭게 적어보세요"
-            ref={(el) => autoResizeTextarea(el)}
+            ref={autoSizeRef}
             onChange={(e) => {
               editNoteTextLocal(note.id, e.target.value);
               autoResizeTextarea(e.target);
@@ -2063,7 +2093,7 @@ export default function FacilitationBoard() {
               </div>
               <textarea
                 defaultValue={board.instructions}
-                ref={(el) => autoResizeTextarea(el)}
+                ref={autoSizeRef}
                 onInput={(e) => autoResizeTextarea(e.target)}
                 onFocus={() => {
                   suspendPollRef.current = true;
@@ -2379,7 +2409,7 @@ export default function FacilitationBoard() {
                           <span style={{ fontSize: 12, color: "#a19c95", flexShrink: 0, marginTop: 6 }}>이유 :</span>
                           <textarea
                             value={n.description || ""}
-                            ref={(el) => autoResizeTextarea(el)}
+                            ref={autoSizeRef}
                             onChange={(e) => {
                               editNoteDescriptionLocal(n.id, e.target.value);
                               autoResizeTextarea(e.target);
@@ -2448,7 +2478,7 @@ export default function FacilitationBoard() {
                       </div>
                       <textarea
                         value={n.text}
-                        ref={(el) => autoResizeTextarea(el)}
+                        ref={autoSizeRef}
                         onChange={(e) => {
                           editNoteTextLocal(n.id, e.target.value);
                           autoResizeTextarea(e.target);
@@ -2465,7 +2495,7 @@ export default function FacilitationBoard() {
                       />
                       <textarea
                         value={n.description || ""}
-                        ref={(el) => autoResizeTextarea(el)}
+                        ref={autoSizeRef}
                         onChange={(e) => {
                           editNoteDescriptionLocal(n.id, e.target.value);
                           autoResizeTextarea(e.target);
@@ -2703,7 +2733,7 @@ export default function FacilitationBoard() {
                       <textarea
                         value={r[field] || ""}
                         readOnly={!mineCell}
-                        ref={(el) => autoResizeTextarea(el)}
+                        ref={autoSizeRef}
                         onInput={(e) => autoResizeTextarea(e.target)}
                         onChange={mineCell ? (e) => { editRetroLocal(owner, field, e.target.value); autoResizeTextarea(e.target); } : undefined}
                         onFocus={mineCell ? () => { suspendPollRef.current = true; } : undefined}
@@ -2831,7 +2861,7 @@ export default function FacilitationBoard() {
                       <td style={{ border: "1px solid #e0e0e0", padding: "6px 12px", verticalAlign: "top" }}>
                         <textarea
                           defaultValue={board.docFields?.[key] || ""}
-                          ref={(el) => autoResizeTextarea(el)}
+                          ref={autoSizeRef}
                           onInput={(e) => autoResizeTextarea(e.target)}
                           onFocus={() => {
                             suspendPollRef.current = true;

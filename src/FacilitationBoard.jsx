@@ -821,14 +821,18 @@ function TopBar({ onProjects, onSaveImage, onMinutes, minutesRecording, right })
           flexWrap: "wrap",
         }}
       >
-        <Logo onClick={goHome} height={34} />
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {/* 로고 + "내 프로젝트"를 왼쪽에 배치. "내 프로젝트"는 우측 버튼 줄과 같은 세로 패딩을 가져
+            버튼 줄과 같은 높이·중심선에 놓이게 한다(로고 높이가 위치를 좌우하지 않도록). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <Logo onClick={goHome} height={30} />
           <button
             onClick={onProjects}
-            style={{ border: "none", background: "none", color: "#6f6b66", fontSize: 15, fontWeight: 600, cursor: "pointer", padding: 0 }}
+            style={{ border: "none", background: "none", color: "#6f6b66", fontSize: 15, fontWeight: 600, cursor: "pointer", padding: "10.5px 2px 5.5px 2px", lineHeight: 1, whiteSpace: "nowrap" }}
           >
             내 프로젝트
           </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           {onSaveImage && (
             <button
               data-guide="save-image"

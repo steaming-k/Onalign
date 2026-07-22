@@ -2805,7 +2805,7 @@ export default function FacilitationBoard() {
                 </button>
               </div>
             </div>
-            <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)", maxWidth: 860, margin: "0 auto" }}>
+            <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)" }}>
             <div style={{ borderBottom: "2px solid #242322", paddingBottom: 14, marginBottom: 22 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", letterSpacing: ".04em" }}>
                 {docType === "process" ? "과정 문서 · PROCESS" : "결과 문서 · RESULT"}

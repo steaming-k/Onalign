@@ -677,7 +677,9 @@ function GuideCoach({ phase, onGotoScreen }) {
     setStep(step + 1);
   };
 
-  if (!active || !rect || active.screen !== phase) return null;
+  // 현재 화면이 아니거나 아직 단계가 없으면 아무것도 그리지 않는다.
+  // rect가 없어도(대상 요소가 화면에 없어도) 안내는 계속돼야 하므로 여기서 끝내지 않는다.
+  if (!active || active.screen !== phase) return null;
 
   // 화면이 좁아져도 말풍선이 밖으로 나가지 않도록: 폭은 뷰포트에 맞춰 줄이고,
   // 위치는 실측 크기(bubbleSize) 기준으로 좌우/상하 여백 안쪽으로 클램프한다.
@@ -687,18 +689,27 @@ function GuideCoach({ phase, onGotoScreen }) {
   const bubbleWidth = Math.min(250, viewportW - margin * 2);
   const bubbleHeight = bubbleSize.height || 120;
 
-  const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
-  const left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
-
-  const spaceBelow = viewportH - rect.bottom;
-  const spaceAbove = rect.top;
-  const below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
-  const top = below
-    ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
-    : Math.max(rect.top - 14 - bubbleHeight, margin);
-
-  // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
-  const arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
+  // 대상 요소가 없을 때(예: 온보딩 중 비어 있는 "문제 정리" 탭)는 하이라이트 없이
+  // 화면 중앙에 안내만 띄워 투어 흐름이 끊기지 않게 한다.
+  const hasRect = !!rect;
+  let left, top, below, arrowLeft;
+  if (hasRect) {
+    const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
+    left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
+    const spaceBelow = viewportH - rect.bottom;
+    const spaceAbove = rect.top;
+    below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
+    top = below
+      ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
+      : Math.max(rect.top - 14 - bubbleHeight, margin);
+    // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
+    arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
+  } else {
+    left = Math.max(margin, (viewportW - bubbleWidth) / 2);
+    top = Math.max(margin, (viewportH - bubbleHeight) / 2);
+    below = true;
+    arrowLeft = -100; // 대상이 없으면 화살표는 숨긴다
+  }
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
@@ -708,7 +719,7 @@ function GuideCoach({ phase, onGotoScreen }) {
           안 읽고 넘어가는 문제가 있어, 가이드를 다 보거나 건너뛰어야만 다음 작업이 가능하도록 강제한다. */}
       <style>{`@keyframes onalignPulse{0%{box-shadow:0 0 0 0 rgba(114,201,172,.55)}70%{box-shadow:0 0 0 8px rgba(114,201,172,0)}100%{box-shadow:0 0 0 0 rgba(114,201,172,0)}}`}</style>
 
-      {active.target !== "vote-area" && (
+      {hasRect && active.target !== "vote-area" && (
         <div
           style={{
             position: "absolute",
@@ -745,17 +756,19 @@ function GuideCoach({ phase, onGotoScreen }) {
           boxSizing: "border-box",
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            left: arrowLeft - 6,
-            transform: "rotate(45deg)",
-            width: 12,
-            height: 12,
-            background: "#242424",
-            ...(below ? { top: -6 } : { bottom: -6 }),
-          }}
-        />
+        {hasRect && (
+          <div
+            style={{
+              position: "absolute",
+              left: arrowLeft - 6,
+              transform: "rotate(45deg)",
+              width: 12,
+              height: 12,
+              background: "#242424",
+              ...(below ? { top: -6 } : { bottom: -6 }),
+            }}
+          />
+        )}
         <div style={{ fontSize: 11, color: "#8a8a8a", marginBottom: 6, position: "relative" }}>
           가이드 {step + 1} / {TOUR_STEPS.length}
         </div>

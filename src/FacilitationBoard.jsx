@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toPng } from "html-to-image";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType } from "docx";
 import { storage } from "./storage";
 import Logo from "./components/Logo";
 import ConfirmDialog from "./components/ConfirmDialog";
@@ -194,190 +195,6 @@ function buildDocModel(project, board) {
   return { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes };
 }
 
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
-// 다운로드용 자립형 HTML 문서 문자열 생성 (브라우저에서 바로 열람·인쇄 가능)
-// docType: "process"(과정 전체) | "result"(우선순위 TOP 5 결과만)
-function buildDocHtml(project, board, docType = "process") {
-  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes } = buildDocModel(project, board);
-  const dateStr = new Date().toLocaleString("ko-KR");
-  const topVote = ranked[0];
-  const nl2br = (s) => esc(s).replace(/\r?\n/g, "<br>");
-
-  const style = `
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;color:#242424;max-width:860px;margin:0 auto;padding:40px 24px;line-height:1.6}
-  h1{font-size:26px;margin:0 0 4px}
-  .sub{color:#888;font-size:13px;margin-bottom:32px}
-  h2{font-size:18px;margin:36px 0 12px;padding-bottom:6px;border-bottom:2px solid #eee}
-  table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{border:1px solid #e0e0e0;padding:9px 12px;text-align:left;vertical-align:top}
-  thead th{background:#e9e9e9;font-weight:700}
-  tbody th{background:#f2f2f2;width:160px;white-space:nowrap}
-  .chip{display:inline-block;border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
-  .empty{color:#aaa}
-  .rank1 td{background:#fdf3f7}
-  .desc{color:#777;font-size:12.5px;margin-top:3px}
-  .retro-name{background:#f2f2f2;font-weight:700}
-  footer{margin-top:40px;color:#aaa;font-size:12px;text-align:center}`;
-
-  // 문서 표준 필드(목적/배경/추진 방향/기대 효과) — 과정/결과 문서 공통, 항상 최상단
-  const fieldsSection = `<h2>문서 표준 정보</h2>
-<table><tbody>${[
-    ["목적", docFields.purpose],
-    ["배경", docFields.background],
-    ["추진 방향", docFields.direction],
-    ["기대 효과", docFields.expected],
-  ]
-    .map(([k, v]) => `<tr><th>${k}</th><td>${v && v.trim() ? nl2br(v) : '<span class="empty">—</span>'}</td></tr>`)
-    .join("")}</tbody></table>`;
-
-  // 우선순위 해결여부 (회고 토글 ON일 때만)
-  const resolutionSection = priorityCheckOn
-    ? `<h2>우선순위 해결여부</h2>
-<table><thead><tr><th>#</th><th>문제</th><th>득표</th><th>해결여부</th></tr></thead><tbody>${
-        resolutionRows.length
-          ? resolutionRows
-              .map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.text)}</td><td>${r.votes}표</td><td>${RESOLUTION_LABELS[r.resolution] || '<span class="empty">미정</span>'}</td></tr>`)
-              .join("")
-          : `<tr><td colspan="4" class="empty">우선순위로 정리된 문제가 없습니다.</td></tr>`
-      }</tbody></table>`
-    : "";
-
-  // 회고(KPT) — 완료한 참여자만
-  const retroSection = `<h2>회고 (KPT)</h2>${
-    completedRetros.length
-      ? completedRetros
-          .map(
-            (r) =>
-              `<table style="margin-bottom:16px"><tbody><tr><th class="retro-name" colspan="2">${esc(r.name)}</th></tr><tr><th>Keep</th><td>${r.keep && r.keep.trim() ? nl2br(r.keep) : '<span class="empty">—</span>'}</td></tr><tr><th>Problem</th><td>${r.problem && r.problem.trim() ? nl2br(r.problem) : '<span class="empty">—</span>'}</td></tr><tr><th>Try</th><td>${r.try && r.try.trim() ? nl2br(r.try) : '<span class="empty">—</span>'}</td></tr></tbody></table>`
-          )
-          .join("")
-      : `<p class="empty">완료된 회고가 없습니다.</p>`
-  }`;
-
-  // 회의 녹취록 — 회의록 녹음 내용이 있을 때만
-  const minutesSection = minutes
-    ? `<h2>회의 녹취록</h2>
-<table><tbody><tr><td style="white-space:pre-wrap;line-height:1.7">${nl2br(minutes)}</td></tr></tbody></table>`
-    : "";
-
-  if (docType === "result") {
-    const overviewRows = [
-      ["프로젝트명", esc(project.title)],
-      ["문서 생성일시", esc(dateStr)],
-      ["문제로 표시된 의견 수", `${problemNotes.length}개`],
-      ["최다 득표", topVote ? `${esc(topVote.text)} (${topVote.votes}표)` : "—"],
-    ]
-      .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
-      .join("");
-
-    const topRows = topRanked.length
-      ? topRanked
-          .map(
-            (p, i) =>
-              `<tr${i === 0 ? ' class="rank1"' : ""}><td>${i + 1}</td><td>${esc(p.text)}${p.description ? `<div class="desc">설명: ${esc(p.description)}</div>` : ""}</td><td>${p.votes}표</td><td>${esc(p.voters.join(", ")) || "—"}</td></tr>`
-          )
-          .join("")
-      : `<tr><td colspan="4" class="empty">결과가 없습니다.</td></tr>`;
-
-    return `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>${esc(project.title)} — 결과 문서</title>
-<style>${style}</style></head><body>
-<h1>${esc(project.title)}</h1>
-<div class="sub">Onalign 퍼실리테이션 결과 문서 · ${esc(dateStr)}</div>
-
-${fieldsSection}
-
-<h2>개요</h2>
-<table><tbody>${overviewRows}</tbody></table>
-
-<h2>우선순위 TOP 5 결과</h2>
-<table><thead><tr><th>순위</th><th>문제</th><th>득표</th><th>투표자</th></tr></thead><tbody>${topRows}</tbody></table>
-
-${resolutionSection}
-
-${retroSection}
-
-${minutesSection}
-
-<footer>Generated by Onalign</footer>
-</body></html>`;
-  }
-
-  // docType === "process": 과정 전체 (개요·참여자·의견 모음·문제 정리)
-  const overviewRows = [
-    ["프로젝트명", esc(project.title)],
-    ["문서 생성일시", esc(dateStr)],
-    ["참여자 수", `${participants.length}명`],
-    ["작성된 의견 수", `${board.notes.length}개`],
-    ["문제로 표시된 의견 수", `${problemNotes.length}개`],
-  ]
-    .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
-    .join("");
-
-  const participantRows = participants.length
-    ? participants
-        .map(
-          (p) =>
-            `<tr><td>${esc(p.name)}</td><td><span class="chip" style="background:${p.color.bg};color:${p.color.text};border:1px solid ${p.color.border}">${p.color.name}</span></td></tr>`
-        )
-        .join("")
-    : `<tr><td colspan="2" class="empty">참여자가 없습니다.</td></tr>`;
-
-  const opinionRows = board.notes.length
-    ? notesByTopic
-        .flatMap((t) =>
-          t.notes.map(
-            (n) =>
-              `<tr><td>${esc(t.title)}</td><td>${esc(n.text) || '<span class="empty">(빈 포스트잇)</span>'}${n.isProblem ? ' <span class="chip" style="background:#fdecec;color:#c0392b;border:1px solid #eab5b0">문제</span>' : ""}</td><td>${esc(n.authors.join(", "))}</td></tr>`
-          )
-        )
-        .join("")
-    : `<tr><td colspan="3" class="empty">작성된 의견이 없습니다.</td></tr>`;
-
-  const problemRows = problemNotes.length
-    ? problemNotes
-        .map(
-          (n, i) =>
-            `<tr><td>${i + 1}</td><td>${esc(n.text)}${n.description ? `<div class="desc">설명: ${esc(n.description)}</div>` : ""}</td><td>${esc(n.authors.join(", "))}</td></tr>`
-        )
-        .join("")
-    : `<tr><td colspan="3" class="empty">문제로 표시된 의견이 없습니다.</td></tr>`;
-
-  return `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>${esc(project.title)} — 과정 문서</title>
-<style>${style}</style></head><body>
-<h1>${esc(project.title)}</h1>
-<div class="sub">Onalign 퍼실리테이션 과정 문서 · ${esc(dateStr)}</div>
-
-${fieldsSection}
-
-<h2>개요</h2>
-<table><tbody>${overviewRows}</tbody></table>
-
-<h2>참여자</h2>
-<table><thead><tr><th>이름</th><th>배정 색상</th></tr></thead><tbody>${participantRows}</tbody></table>
-
-<h2>의견 모음 (과정)</h2>
-<table><thead><tr><th>주제</th><th>내용</th><th>작성자</th></tr></thead><tbody>${opinionRows}</tbody></table>
-
-<h2>문제 정리 및 부가 설명</h2>
-<table><thead><tr><th>#</th><th>문제</th><th>작성자</th></tr></thead><tbody>${problemRows}</tbody></table>
-
-${resolutionSection}
-
-${retroSection}
-
-${minutesSection}
-
-<footer>Generated by Onalign</footer>
-</body></html>`;
-}
-
 function mdEsc(s) {
   return String(s ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
 }
@@ -556,6 +373,192 @@ Generated by Onalign
 `;
 }
 
+// ===== docx(Word) 다운로드 =====
+// HTML/마크다운 다운로드와 동일하게 buildDocModel의 계산 결과를 그대로 재사용한다(원본 하나, 표현만 다름).
+// 표 셀 하나에 여러 줄이 들어갈 수 있으므로(부가 설명, 회의 녹취록 등) 줄바꿈마다 별도 Paragraph로 나눠 넣는다.
+function docCellParagraphs(text, { bold = false } = {}) {
+  const str = text == null ? "" : String(text);
+  const lines = str.trim() ? str.split(/\r?\n/) : ["—"];
+  return lines.map(
+    (line) =>
+      new Paragraph({
+        children: [new TextRun({ text: line, bold, italics: !str.trim() })],
+      })
+  );
+}
+
+function docCell(text, { header = false, widthPct } = {}) {
+  return new TableCell({
+    width: widthPct ? { size: widthPct, type: WidthType.PERCENTAGE } : undefined,
+    shading: header ? { fill: "E9E9E9" } : undefined,
+    children: docCellParagraphs(text, { bold: header }),
+  });
+}
+
+// 라벨(굵게, 회색 배경) | 값 형태의 세로 표 (문서 표준 정보, 개요 등)
+function docKvTable(pairs) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: pairs.map(
+      ([k, v]) =>
+        new TableRow({
+          children: [docCell(k, { header: true, widthPct: 25 }), docCell(v)],
+        })
+    ),
+  });
+}
+
+// 헤더 행 + 데이터 행으로 이뤄진 표 (의견 모음, 우선순위 TOP 5 등)
+function docDataTable(headers, rows) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ tableHeader: true, children: headers.map((h) => docCell(h, { header: true })) }),
+      ...rows.map((r) => new TableRow({ children: r.map((c) => docCell(c)) })),
+    ],
+  });
+}
+
+function docSectionHeading(text) {
+  return new Paragraph({ text, heading: HeadingLevel.HEADING_1, spacing: { before: 320, after: 120 } });
+}
+
+function docSpacer() {
+  return new Paragraph({ text: "", spacing: { after: 80 } });
+}
+
+// 다운로드용 Word(.docx) 문서 생성. HTML 버전과 같은 구성(문서 표준 정보 → 개요 → 본문 → 우선순위 해결여부 → 회고 → 회의 녹취록)을
+// Word의 제목 스타일(Heading)과 표 기능으로 그대로 옮긴다.
+function buildDocDocx(project, board, docType = "process") {
+  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes } = buildDocModel(project, board);
+  const dateStr = new Date().toLocaleString("ko-KR");
+  const topVote = ranked[0];
+  const isResult = docType === "result";
+
+  const children = [
+    new Paragraph({ text: project.title, heading: HeadingLevel.TITLE }),
+    new Paragraph({
+      children: [new TextRun({ text: `Onalign 퍼실리테이션 ${isResult ? "결과" : "과정"} 문서 · ${dateStr}`, color: "888888", size: 20 })],
+      spacing: { after: 200 },
+    }),
+
+    docSectionHeading("문서 표준 정보"),
+    docKvTable([
+      ["목적", docFields.purpose],
+      ["배경", docFields.background],
+      ["추진 방향", docFields.direction],
+      ["기대 효과", docFields.expected],
+    ]),
+    docSpacer(),
+
+    docSectionHeading("개요"),
+    docKvTable(
+      isResult
+        ? [
+            ["프로젝트명", project.title],
+            ["문서 생성일시", dateStr],
+            ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+            ["최다 득표", topVote ? `${topVote.text} (${topVote.votes}표)` : "—"],
+          ]
+        : [
+            ["프로젝트명", project.title],
+            ["문서 생성일시", dateStr],
+            ["참여자 수", `${participants.length}명`],
+            ["작성된 의견 수", `${board.notes.length}개`],
+            ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+          ]
+    ),
+    docSpacer(),
+  ];
+
+  if (isResult) {
+    children.push(
+      docSectionHeading("우선순위 TOP 5 결과"),
+      docDataTable(
+        ["순위", "문제", "득표", "투표자"],
+        topRanked.length
+          ? topRanked.map((p, i) => [String(i + 1), p.description ? `${p.text}\n설명: ${p.description}` : p.text, `${p.votes}표`, p.voters.join(", ") || "—"])
+          : [["-", "결과가 없습니다.", "-", "-"]]
+      ),
+      docSpacer()
+    );
+  } else {
+    children.push(
+      docSectionHeading("참여자"),
+      docDataTable(
+        ["이름", "배정 색상"],
+        participants.length ? participants.map((p) => [p.name, p.color.name]) : [["-", "참여자가 없습니다."]]
+      ),
+      docSpacer(),
+
+      docSectionHeading("의견 모음 (과정)"),
+      docDataTable(
+        ["주제", "내용", "작성자"],
+        board.notes.length
+          ? notesByTopic.flatMap((t) => t.notes.map((n) => [t.title, (n.text || "(빈 포스트잇)") + (n.isProblem ? " [문제]" : ""), n.authors.join(", ")]))
+          : [["-", "작성된 의견이 없습니다.", "-"]]
+      ),
+      docSpacer(),
+
+      docSectionHeading("문제 정리 및 부가 설명"),
+      docDataTable(
+        ["#", "문제", "작성자"],
+        problemNotes.length
+          ? problemNotes.map((n, i) => [String(i + 1), n.description ? `${n.text}\n설명: ${n.description}` : n.text, n.authors.join(", ")])
+          : [["-", "문제로 표시된 의견이 없습니다.", "-"]]
+      ),
+      docSpacer()
+    );
+  }
+
+  if (priorityCheckOn) {
+    children.push(
+      docSectionHeading("우선순위 해결여부"),
+      docDataTable(
+        ["#", "문제", "득표", "해결여부"],
+        resolutionRows.length
+          ? resolutionRows.map((r, i) => [String(i + 1), r.text, `${r.votes}표`, RESOLUTION_LABELS[r.resolution] || "미정"])
+          : [["-", "우선순위로 정리된 문제가 없습니다.", "-", "-"]]
+      ),
+      docSpacer()
+    );
+  }
+
+  children.push(docSectionHeading("회고 (KPT)"));
+  if (completedRetros.length) {
+    completedRetros.forEach((r) => {
+      children.push(
+        new Paragraph({ text: r.name, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 80 } }),
+        docKvTable([
+          ["Keep", r.keep],
+          ["Problem", r.problem],
+          ["Try", r.try],
+        ]),
+        docSpacer()
+      );
+    });
+  } else {
+    children.push(new Paragraph({ children: [new TextRun({ text: "완료된 회고가 없습니다.", italics: true, color: "888888" })] }), docSpacer());
+  }
+
+  if (minutes) {
+    children.push(docSectionHeading("회의 녹취록"), ...docCellParagraphs(minutes), docSpacer());
+  }
+
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: "Generated by Onalign", color: "aaaaaa", size: 18 })],
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 240 },
+    })
+  );
+
+  return new Document({
+    styles: { default: { document: { run: { font: "맑은 고딕", size: 22 } } } },
+    sections: [{ children }],
+  });
+}
+
 // ===== 2번 관련: 작업 흐름 안내 투어 (세션당 1회) =====
 const GUIDE_SESSION_KEY = "onalign-guide-done";
 
@@ -571,7 +574,7 @@ const TOUR_STEPS = [
   { target: "retro-kpt", screen: "retro", text: "각자 Keep·Problem·Try를 적고 '완료'를 누르세요. 완료한 사람의 회고가 문서에 자동으로 담기고, 완료 후에도 수정하면 문서에 바로 반영돼요" },
   { target: "doc-type-process", screen: "document", text: "과정 문서에는 표준 정보(목적·배경·추진 방향·기대 효과)와 의견·문제 정리, 완료된 회고까지 한 흐름으로 정리돼요" },
   { target: "doc-type-result", screen: "document", text: "결과 문서에는 우선순위 TOP 5와 해결여부, 완료된 회고가 간추려 담겨요" },
-  { target: "doc-download", screen: "document", text: "완성된 문서를 이미지·HTML·마크다운으로 저장해 팀과 공유하세요" },
+  { target: "doc-download", screen: "document", text: "완성된 문서를 이미지·docx·마크다운으로 저장하거나, 프롬프트로 추출해 AI에게 정리를 맡기세요" },
 ];
 
 function guideDoneThisSession() {
@@ -905,6 +908,8 @@ export default function FacilitationBoard() {
   const [confirmState, setConfirmState] = useState(null); // { title, message, confirmLabel, onConfirm }
   const [docType, setDocType] = useState("process"); // "문서" 탭에서 선택한 문서 종류: 과정 | 결과(TOP 5)
   const [parkingOpen, setParkingOpen] = useState(false); // 보류함 접이식 섹션 열림 여부 (기본 닫힘)
+  const [docxDownloading, setDocxDownloading] = useState(false); // docx 생성 중 다운로드 버튼 비활성화용
+  const [promptCopied, setPromptCopied] = useState(false); // "프롬프트 추출" 복사 완료 피드백(일시적)
   // ===== 음성 녹음 → 텍스트 변환 (Web Speech API, 마이크 입력 기준) =====
   // recording 상태(board.recording)는 참여자 모두에게 보이는 공유 배지지만, 실제 음성 인식은
   // "녹음 버튼을 누른 이 브라우저"에서만 로컬로 돌아간다. 인식 결과도 이 브라우저에 로컬로 쌓인다.
@@ -1597,16 +1602,21 @@ export default function FacilitationBoard() {
     link.click();
   };
 
-  // 4번(문서): 표 중심 문서를 HTML 파일로 내려받기. docType으로 "과정" 문서와 "결과"(TOP 5) 문서를 구분한다.
-  const downloadDoc = (type) => {
-    const html = buildDocHtml(selectedProject, board, type);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.html`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+  // 4번(문서): 표 중심 문서를 Word(.docx) 파일로 내려받기. docType으로 "과정" 문서와 "결과"(TOP 5) 문서를 구분한다.
+  const downloadDoc = async (type) => {
+    setDocxDownloading(true);
+    try {
+      const doc = buildDocDocx(selectedProject, board, type);
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.docx`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDocxDownloading(false);
+    }
   };
 
   // 4번(문서): 표 중심 문서를 마크다운 파일로 내려받기 (노션·구글독스 등에 붙여넣기 좋음)
@@ -1619,6 +1629,71 @@ export default function FacilitationBoard() {
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  // 4번(문서): 문서 표준 4필드 + (과정: 의견·문제 / 결과: 우선순위·해결여부) + 회의 녹취록을 하나의 지시문으로 합쳐
+  // 클립보드에 복사한다. ChatGPT·Claude·Gemini 등 외부 AI 채팅창에 바로 붙여넣어 정리된 문서를 받는 용도.
+  const buildDocPrompt = (type) => {
+    const { docFields, notesByTopic, problemNotes, topRanked, resolutionRows, priorityCheckOn, minutes } = buildDocModel(selectedProject, board);
+    const v = (s) => (s && s.trim() ? s.trim() : "(입력 없음)");
+
+    const parts = [
+      "다음은 회의에서 나온 자료입니다. 이 내용을 바탕으로 목적, 배경, 추진 방향, 기대 효과가 명확히 드러나는 정리된 문서를 작성해줘. 각 항목은 결론부터 먼저 쓰고(두괄식) 뒷받침 내용을 풀어 설명하는 대신 핵심만 짧게 나열하는 개조식으로 정리해줘.",
+      "",
+      "## 문서 표준 정보",
+      `- 목적: ${v(docFields.purpose)}`,
+      `- 배경: ${v(docFields.background)}`,
+      `- 추진 방향: ${v(docFields.direction)}`,
+      `- 기대 효과: ${v(docFields.expected)}`,
+    ];
+
+    if (type === "result") {
+      parts.push("", "## 우선순위 결과");
+      if (topRanked.length) {
+        topRanked.forEach((p, i) => {
+          parts.push(`${i + 1}. ${p.text}${p.description ? ` (설명: ${p.description})` : ""} — ${p.votes}표`);
+        });
+      } else {
+        parts.push("(우선순위로 정리된 문제 없음)");
+      }
+      if (priorityCheckOn && resolutionRows.length) {
+        parts.push("", "## 해결여부");
+        resolutionRows.forEach((r) => {
+          parts.push(`- ${r.text}: ${RESOLUTION_LABELS[r.resolution] || "미정"}`);
+        });
+      }
+    } else {
+      parts.push("", "## 의견 모음");
+      if (board.notes.length) {
+        notesByTopic.forEach((t) => {
+          t.notes.forEach((n) => {
+            parts.push(`- [${t.title}] ${n.text || "(빈 포스트잇)"}${n.isProblem ? " (문제로 표시됨)" : ""}`);
+          });
+        });
+      } else {
+        parts.push("(작성된 의견 없음)");
+      }
+      parts.push("", "## 문제 정리");
+      if (problemNotes.length) {
+        problemNotes.forEach((n, i) => {
+          parts.push(`${i + 1}. ${n.text}${n.description ? ` — ${n.description}` : ""}`);
+        });
+      } else {
+        parts.push("(문제로 표시된 의견 없음)");
+      }
+    }
+
+    if (minutes.trim()) {
+      parts.push("", "## 회의 녹취록", minutes.trim());
+    }
+
+    return parts.join("\n");
+  };
+  const copyDocPrompt = async (type) => {
+    const text = buildDocPrompt(type);
+    await navigator.clipboard.writeText(text);
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 1800);
   };
 
   // ---- 화면 1: 프로젝트 목록 / 생성 ----
@@ -2776,9 +2851,12 @@ export default function FacilitationBoard() {
 
         {board.phase === "document" && (
           <motion.div key="document" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+            {/* 토글(과정/결과)과 다운로드 버튼 그룹을 좌우로 나란히 두지 않고 항상 세로로 쌓는다.
+                좌우 배치는 좁은 화면에서 토글이 혼자 줄바꿈되어 어색해 보이는 문제가 있어,
+                각 그룹이 항상 전체 너비를 쓰도록 고정한다. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
               {/* 세그먼트 토글 (과정 / 결과) */}
-              <div style={{ display: "inline-flex", borderRadius: 11, padding: 4, background: "#eeeeee" }}>
+              <div style={{ display: "inline-flex", alignSelf: "flex-start", borderRadius: 11, padding: 4, background: "#eeeeee" }}>
                 <button
                   data-guide="doc-type-process"
                   onClick={() => setDocType("process")}
@@ -2814,25 +2892,44 @@ export default function FacilitationBoard() {
                   결과 문서
                 </button>
               </div>
-              <div data-guide="doc-download" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  onClick={downloadDocImage}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  이미지로 저장
-                </button>
-                <button
-                  onClick={() => downloadDoc(docType)}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  HTML로 다운로드
-                </button>
-                <button
-                  onClick={() => downloadDocMarkdown(docType)}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  마크다운으로 다운로드
-                </button>
+              <div>
+                {/* 버튼 4개를 2개씩 짝지어, 화면이 좁아 줄바꿈될 때 낱개가 아니라 짝(그룹) 단위로 줄바꿈되게 한다.
+                    "프롬프트 추출" 혼자 다음 줄에 덜렁 남는 걸 막기 위해 "마크다운으로 다운로드"와 한 그룹으로 묶는다. */}
+                <div data-guide="doc-download" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button
+                      onClick={downloadDocImage}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      이미지로 저장
+                    </button>
+                    <button
+                      onClick={() => downloadDoc(docType)}
+                      disabled={docxDownloading}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: docxDownloading ? "wait" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", opacity: docxDownloading ? 0.6 : 1 }}
+                    >
+                      {docxDownloading ? "생성 중..." : "docx로 다운로드"}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button
+                      onClick={() => downloadDocMarkdown(docType)}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      마크다운으로 다운로드
+                    </button>
+                    <button
+                      onClick={() => copyDocPrompt(docType)}
+                      title="회의 녹취록과 문서 내용을 하나의 프롬프트로 복사합니다"
+                      style={{ padding: "9px 14px", borderRadius: 9, border: `1px solid ${promptCopied ? "#a9e6d3" : "rgba(36,35,34,.14)"}`, background: promptCopied ? "#e6f7f1" : "#fff", color: promptCopied ? "#1e7a4d" : "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      {promptCopied ? "✓ 복사됨" : "프롬프트 추출"}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#a19c95", marginTop: 8, textAlign: "left" }}>
+                  회의 녹취록과 문서 내용을 하나의 프롬프트로 만들어드립니다. 복사해서 ChatGPT·Claude·Gemini 등 사용하시는 AI에 붙여넣으면 정리된 문서를 받아볼 수 있습니다.
+                </div>
               </div>
             </div>
             <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)" }}>

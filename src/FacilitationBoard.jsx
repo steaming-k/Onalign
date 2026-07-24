@@ -2347,9 +2347,17 @@ export default function FacilitationBoard() {
                           </div>
                         </div>
                       )}
-                      {/* 5번: 일반 포스트잇은 flex-wrap으로 좌->우 채우고 줄바꿈 (가로 스크롤 없음) */}
+                      {/* 5번: 일반 포스트잇은 flex-wrap으로 좌->우 채우고 줄바꿈 (가로 스크롤 없음).
+                          포스트잇 옆 빈 공간(카드가 없는 gap 영역)을 클릭해도 새 포스트잇이 생기게 한다.
+                          e.target === e.currentTarget로 카드 자체 클릭과 구분(카드를 눌렀을 때는 무시).
+                          병합 모드에서는 카드를 골라 합치는 중이므로 빈 공간 클릭으로 새 포스트잇을 만들지 않는다. */}
                       {plainNotes.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                        <div
+                          onClick={(e) => {
+                            if (!mergeMode && e.target === e.currentTarget) createBlankNote(topic.id);
+                          }}
+                          style={{ display: "flex", flexWrap: "wrap", gap: 12, minHeight: 30, cursor: mergeMode ? "default" : "pointer" }}
+                        >
                           <AnimatePresence mode="popLayout">{plainNotes.map(renderNoteCard)}</AnimatePresence>
                         </div>
                       )}
@@ -2363,7 +2371,22 @@ export default function FacilitationBoard() {
                         </div>
                       )}
                       {topicNotes.length === 0 && (
-                        <div style={{ color: "#a19c95", fontSize: 13, padding: 6 }}>아직 포스트잇이 없습니다. "+ 포스트잇"을 눌러 시작하세요.</div>
+                        <button
+                          onClick={() => createBlankNote(topic.id)}
+                          style={{
+                            width: "100%",
+                            background: "none",
+                            border: "1.5px dashed rgba(36,35,34,.18)",
+                            borderRadius: 12,
+                            padding: 16,
+                            fontSize: 13,
+                            color: "#a19c95",
+                            cursor: "pointer",
+                            textAlign: "center",
+                          }}
+                        >
+                          아직 포스트잇이 없습니다. 클릭해서 시작하세요.
+                        </button>
                       )}
                     </div>
                   </div>

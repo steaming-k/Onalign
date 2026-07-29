@@ -979,6 +979,10 @@ export default function FacilitationBoard() {
   // 계정의 표시 이름을 그대로 참여 신원으로 쓴다(로그아웃 상태면 null).
   const name = displayNameOf(user);
   const [board, setBoard] = useState(emptyBoard());
+  // 어느 탭(STEP)을 보고 있는지는 참여자 개인 화면 상태다 — board(공유 데이터)에 넣으면
+  // 폴링으로 한 사람이 탭을 넘길 때마다 다른 참여자 화면까지 같이 넘어가버린다("각자 원하는
+  // 화면 보게 해달라"는 요청으로 분리). 온보딩 가이드 투어의 자동 탭전환도 이제 내 화면에만 영향을 준다.
+  const [activeTab, setActiveTab] = useState("opinion");
   const [loaded, setLoaded] = useState(false);
   const [justCreatedId, setJustCreatedId] = useState(null);
   const [mergeMode, setMergeMode] = useState(false);
@@ -1488,12 +1492,6 @@ export default function FacilitationBoard() {
     topicRefs.current[topicId]?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
-  const setPhase = async (phase) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, phase });
-  };
-
   // 사용자별 총 투표 수를 계산 (여러 항목에 분산 가능, 단 항목당 1표로 제한)
   const myVoteCount = (b) =>
     Object.values(b.votes).reduce((sum, voters) => sum + (voters.includes(name) ? 1 : 0), 0);
@@ -1756,7 +1754,7 @@ export default function FacilitationBoard() {
     if (!node) return;
     const dataUrl = await toPng(node, { backgroundColor: "#ffffff", pixelRatio: 2 });
     const link = document.createElement("a");
-    link.download = `${selectedProject.title}-${PHASE_LABELS[board.phase] || "화면"}.png`;
+    link.download = `${selectedProject.title}-${PHASE_LABELS[activeTab] || "화면"}.png`;
     link.href = dataUrl;
     link.click();
   };
@@ -2327,11 +2325,11 @@ export default function FacilitationBoard() {
             { key: "retro", label: "회고" },
             { key: "document", label: "문서" },
           ].map((tab) => {
-            const on = board.phase === tab.key;
+            const on = activeTab === tab.key;
             return (
               <button
                 key={tab.key}
-                onClick={() => setPhase(tab.key)}
+                onClick={() => setActiveTab(tab.key)}
                 style={{
                   padding: "13px 16px",
                   border: "none",
@@ -2352,7 +2350,7 @@ export default function FacilitationBoard() {
 
         <div ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
         <AnimatePresence initial={false}>
-        {board.phase === "opinion" && (
+        {activeTab === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
             {/* 안내 문구 배너: 왼쪽 STEP 라벨 + 편집 가능한 안내 문구 (글자 수에 맞춰 자동 높이) */}
             <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 12, display: "flex", alignItems: "flex-start", gap: 12 }}>
@@ -2738,7 +2736,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
-        {board.phase === "problem" && (
+        {activeTab === "problem" && (
           <motion.div key="problem" {...fadeSlide}>
             {/* STEP 2 배너 */}
             <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
@@ -2819,7 +2817,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
-        {board.phase === "voting" && (
+        {activeTab === "voting" && (
           <motion.div key="voting" {...fadeSlide}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
               <div>
@@ -2934,7 +2932,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
-        {board.phase === "retro" && (
+        {activeTab === "retro" && (
           <motion.div key="retro" {...fadeSlide}>
             {/* STEP 5 배너 */}
             <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
@@ -3082,7 +3080,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
-        {board.phase === "document" && (
+        {activeTab === "document" && (
           <motion.div key="document" {...fadeSlide}>
             {/* 토글(과정/결과)과 다운로드 버튼 그룹을 좌우로 나란히 두지 않고 항상 세로로 쌓는다.
                 좌우 배치는 좁은 화면에서 토글이 혼자 줄바꿈되어 어색해 보이는 문제가 있어,
@@ -3433,7 +3431,7 @@ export default function FacilitationBoard() {
         </div>
       </div>
 
-      <GuideCoach phase={board.phase} onGotoScreen={setPhase} />
+      <GuideCoach phase={activeTab} onGotoScreen={setActiveTab} />
 
       {/* 회의록(minutes) 패널: 헤더 "회의록 녹음"으로 열린다. 전체 회의를 누적하고 .txt·문서로 내보낸다. */}
       <AnimatePresence>

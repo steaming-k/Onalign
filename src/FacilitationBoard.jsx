@@ -11,12 +11,19 @@ import ConfirmDialog from "./components/ConfirmDialog";
 // 화면 전환/요소 추가·삭제에 공통으로 쓰는 트랜지션 프리셋 (애플 스타일의 부드러운 완급 곡선).
 // 앞으로 새 화면·리스트를 추가할 때도 이 프리셋을 그대로 재사용한다.
 const EASE = [0.22, 1, 0.36, 1];
-// 탭(화면) 전환용: 나가는 화면은 absolute로 빠지면서 슬라이드-아웃, 들어오는 화면은 동시에 슬라이드-인 (교차 페이드).
-// mode="wait"로 순서를 기다리면 빈 화면이 잠깐 끼어들어 오히려 끊겨 보이므로, 겹치며 자리를 바꾸는 방식을 쓴다.
+// 탭(화면) 전환용. 예전엔 나가는 화면(absolute)·들어오는 화면(relative)을 겹쳐서 자리를 맞바꾸는
+// 방식을 썼는데, 둘의 실제 높이가 다르면 컨테이너 높이가 그 순간 바로 바뀌면서 튕겨 보였고,
+// 그걸 framer-motion의 layout 애니메이션으로 고치려 하니 이번엔 안의 텍스트/버튼이 같이
+// 눌렸다 펴지는 것처럼 부자연스럽게 늘어나 보였다(레이아웃 애니메이션은 자식 전체를 transform으로
+// 스케일해서 만드는데, motion 컴포넌트가 아닌 일반 자식들은 그 스케일이 보정되지 않는다).
+// 그래서 겹치기를 포기하고 나가는 화면이 다 사라진 뒤에 들어오는 화면이 뜨는 방식(AnimatePresence
+// mode="wait")으로 바꿨다 — 항상 화면에 하나만 떠 있으니 컨테이너 높이가 그 하나를 그대로
+// 따라가고, 스케일 보정도 필요 없다. 대신 빈 화면이 아주 잠깐 끼는데, duration을 짧게 잡아 거의
+// 안 느껴지게 했다.
 const fadeSlide = {
-  initial: { opacity: 0, x: 24 },
-  animate: { opacity: 1, x: 0, position: "relative", transition: { duration: 0.32, ease: EASE } },
-  exit: { opacity: 0, x: -24, position: "absolute", transition: { duration: 0.32, ease: EASE } },
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.2, ease: EASE } },
+  exit: { opacity: 0, y: -8, transition: { duration: 0.14, ease: EASE } },
   style: { width: "100%" },
 };
 const popIn = {
@@ -949,7 +956,7 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
                 style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
               >
                 {dotColor && <span style={{ width: 15, height: 15, borderRadius: 999, background: dotColor, flexShrink: 0 }} />}
-                {user.user_metadata?.full_name || user.user_metadata?.name || user.email}
+                {displayNameOf(user)}
               </span>
               <button
                 onClick={onSignOut}
@@ -2353,11 +2360,8 @@ export default function FacilitationBoard() {
           })}
         </div>
 
-        {/* layout: 탭 전환 시 나가는 화면(absolute)과 들어오는 화면(relative)의 높이가 다르면
-            컨테이너 높이가 한 프레임에 뚝 바뀌면서 아래 스크롤이 같이 튕기던 문제가 있었다.
-            framer-motion의 layout 애니메이션으로 높이 변화 자체도 부드럽게 트윈되게 한다. */}
-        <motion.div layout transition={{ duration: 0.32, ease: EASE }} ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
-        <AnimatePresence initial={false}>
+        <div ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
+        <AnimatePresence mode="wait" initial={false}>
         {activeTab === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
             {/* 안내 문구 배너: 왼쪽 STEP 라벨 + 편집 가능한 안내 문구 (글자 수에 맞춰 자동 높이) */}
@@ -3436,7 +3440,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
         </AnimatePresence>
-        </motion.div>
+        </div>
       </div>
 
       <GuideCoach phase={activeTab} onGotoScreen={setActiveTab} />

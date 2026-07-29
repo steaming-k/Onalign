@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toPng } from "html-to-image";
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, AlignmentType } from "docx";
 import { storage } from "./storage";
+import { supabase } from "./supabaseClient";
+import { useAuth } from "./useAuth";
 import Logo from "./components/Logo";
 import ConfirmDialog from "./components/ConfirmDialog";
 
@@ -25,7 +28,10 @@ const popIn = {
 };
 
 // "이미지로 저장" 파일명에 쓰는 탭별 한글 라벨
-const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", document: "문서" };
+const PHASE_LABELS = { opinion: "의견작성", problem: "문제정리", voting: "우선순위결과", retro: "회고", document: "문서" };
+
+// 회고 탭의 우선순위 해결여부 라벨 (문서 내보내기에서도 공용으로 사용)
+const RESOLUTION_LABELS = { resolved: "해결됨", partial: "부분해결", unresolved: "미해결" };
 
 // 참여자 구분용 6색 파스텔. bg = 포스트잇/색상 점, tint = 참여자 배지의 옅은 배경,
 // text = 포스트잇 위 본문(따뜻한 차콜 통일), border = 색상 점 테두리/보더용.
@@ -38,33 +44,28 @@ const PALETTE = [
   { name: "teal", bg: "#a9e6d3", tint: "#e6f7f1", border: "#72c9ac", text: "#242322" },
 ];
 
-// 프로젝트 목록은 하나의 인덱스 키로 관리하고, 각 프로젝트의 실제 보드 내용은
-// 프로젝트 id를 포함한 별도 키에 저장한다 -> 프로젝트가 늘어나도 목록 조회는 가볍게 유지됨
-const PROJECTS_INDEX_KEY = "facilitation-projects-index";
+// 프로젝트 메타데이터(제목/목표/오너 등)는 실제 관계형 테이블 projects에 저장한다(owner_id 기준
+// RLS를 걸려면 행 단위 테이블이 필요해서 옛 JSON 인덱스 방식에서 이관했다). 포스트잇/투표/회고 등
+// 보드 본문은 지금처럼 프로젝트 id를 키로 하는 kv_store 행에 그대로 둔다.
 const boardKeyOf = (projectId) => `facilitation-board:${projectId}`;
-// 2번: "이 브라우저 = 나"라는 개인 로컬 상태이므로 공유 저장소(storage 어댑터)가 아니라
-// localStorage에 직접 저장한다. 프로젝트 id 단위로 구분해 다른 프로젝트에선 다시 이름을 묻는다.
-const myNameKeyOf = (projectId) => `facilitation-myname:${projectId}`;
-function getSavedName(projectId) {
-  try {
-    return localStorage.getItem(myNameKeyOf(projectId));
-  } catch (e) {
-    return null;
-  }
+// DB 행(snake_case) <-> 앱이 쓰는 프로젝트 객체(camelCase) 변환
+function fromDbProject(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    goal: row.goal || "",
+    pinned: !!row.pinned,
+    ownerId: row.owner_id || null,
+    instructions: row.instructions || DEFAULT_INSTRUCTIONS,
+    votesPerUser: row.votes_per_user || 3,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  };
 }
-function setSavedName(projectId, name) {
-  try {
-    localStorage.setItem(myNameKeyOf(projectId), name);
-  } catch (e) {
-    /* noop */
-  }
-}
-function clearSavedName(projectId) {
-  try {
-    localStorage.removeItem(myNameKeyOf(projectId));
-  } catch (e) {
-    /* noop */
-  }
+// 참여자 식별에 쓸 표시 이름을 구글 프로필에서 뽑아낸다. 로그인이 곧 참여 신원이라
+// (익명/수동 이름 입력 폐지), 별도 로컬 저장이나 이름 화면 없이 이 값 하나로 참여자를 구분한다.
+function displayNameOf(user) {
+  if (!user) return null;
+  return user.user_metadata?.full_name || user.user_metadata?.name || user.email || "참여자";
 }
 
 const DEFAULT_INSTRUCTIONS =
@@ -75,12 +76,27 @@ const emptyBoard = () => ({
   users: {},
   // 의견을 주제별로 나눠 받고 싶을 때를 위한 다중 보드 구조. 기본은 1개에서 시작하고 필요하면 늘린다
   topics: [{ id: uid(), title: "의견1" }],
-  instructions: DEFAULT_INSTRUCTIONS,
+  // instructions(STEP 안내 배너)·votesPerUser(1인당 투표권)는 오너 전용 편집 권한이 걸려야 해서
+  // kv_store(JSON 통짜)가 아니라 projects 테이블 컬럼(instructions/votes_per_user)으로 옮겼다.
+  // board 자체에는 더 이상 두지 않고, 렌더링 시 selectedProject에서 읽는다.
   // 6번: "문제"는 별도 배열이 아니라 note.isProblem 플래그로 표현한다(데이터 복제 없음).
   notes: [],
-  votesPerUser: 3,
   // 7번: 투표는 note.id 기준으로 집계한다. votes[noteId] = [이름, ...]
   votes: {},
+  // ===== 회고/문서 확장 필드 =====
+  // 회고 KPT: 참여자 이름을 키로 갖는다(users와 동일한 키잉). retros[이름] = { keep, problem, try, done }
+  // done===true인 사람의 내용만 문서에 누적되고, done 후에도 자유롭게 수정 가능(실시간 반영).
+  retros: {},
+  // 회고 탭 상단 "우선순위 해결여부" 섹션 표시 여부 토글 (기본 ON)
+  retroPriorityCheck: true,
+  // 우선순위 문제별 해결여부. priorityResolution[noteId] = "resolved" | "partial" | "unresolved"
+  // (votes/isProblem과 같은 "원본은 note 하나, 여기선 표시·기록만" 패턴)
+  priorityResolution: {},
+  // 문서 표준 필드(프로젝트당 1개). 과정/결과 문서 양쪽에 동일하게 반영된다.
+  docFields: { purpose: "", background: "", direction: "", expected: "" },
+  // 회의록 녹음(헤더의 "회의록 녹음")으로 누적한 전체 회의 녹취록. 문서에 "회의 녹취록" 섹션으로 포함된다.
+  // (포스트잇 녹음과 별개의 버퍼. 녹음을 멈출 때 board에 저장돼 문서/다른 참여자에게도 반영된다.)
+  minutes: "",
 });
 
 // 이전 버전에서 저장된 보드를 열어도 깨지지 않도록 보정한다.
@@ -90,10 +106,15 @@ function normalizeBoard(raw) {
   if (!b.topics || b.topics.length === 0) {
     b.topics = [{ id: uid(), title: "의견1" }];
   }
-  if (!b.instructions) b.instructions = DEFAULT_INSTRUCTIONS;
   const firstTopicId = b.topics[0].id;
   b.notes = (b.notes || []).map((n) => ({ ...n, topicId: n.topicId || firstTopicId }));
   b.votes = b.votes || {};
+  // 확장 필드 기본값 보정(구버전 보드 호환)
+  b.retros = b.retros || {};
+  b.retroPriorityCheck = b.retroPriorityCheck !== false; // 저장값 없으면 ON
+  b.priorityResolution = b.priorityResolution || {};
+  b.docFields = { purpose: "", background: "", direction: "", expected: "", ...(b.docFields || {}) };
+  b.minutes = typeof b.minutes === "string" ? b.minutes : "";
 
   // ---- 구버전 problems 배열 마이그레이션 ----
   if (Array.isArray(b.problems)) {
@@ -127,7 +148,9 @@ function uid() {
 // 내용 높이(scrollHeight)에 맞춰 실제 높이를 매번 다시 맞춰준다
 function autoResizeTextarea(el) {
   if (!el) return;
-  el.style.height = "auto";
+  // "auto"는 rows 기본값(2줄)에 묶여, 한 줄짜리 내용도 2줄 높이를 유지한다.
+  // 0으로 먼저 접은 뒤 scrollHeight를 재면 실제 내용 높이(짧으면 1줄, 길면 그만큼)에 정확히 맞는다.
+  el.style.height = "0px";
   el.style.height = el.scrollHeight + "px";
 }
 
@@ -140,6 +163,30 @@ function pickColor(users) {
   return candidates[Math.floor(Math.random() * candidates.length)];
 }
 
+// 문제로 표시된 항목의 정렬 기준을 한 곳에 모아둔다. "우선순위 결과" 탭·"문제 정리" 탭·문서 생성이
+// 모두 이 두 함수만 호출하도록 통일해, 같은 데이터가 여러 곳에서 각자 다시 정렬되며 기준이 어긋나는 것을 막는다.
+// 두 함수 모두 1순위는 득표수 내림차순으로 동일하고, 동점일 때의 2차 기준(빠른 시점 vs 최근 시점)만 다르다.
+
+// 우선순위 결과 탭 / 결과 문서 TOP 목록: 득표수 내림차순, 동점이면 "문제로 표시된 시점이 빠른 순"
+// (먼저 제기된 문제가 나중에 제기된 동점 문제보다 우선순위에서 앞서도록)
+function sortProblemsByVotesEarliestFirst(notes, votes) {
+  return [...notes].sort((a, b) => {
+    const voteDiff = (votes[b.id]?.length || 0) - (votes[a.id]?.length || 0);
+    if (voteDiff !== 0) return voteDiff;
+    return (a.problemMarkedAt || 0) - (b.problemMarkedAt || 0);
+  });
+}
+
+// 문제 정리 탭 / 과정 문서 "문제 정리" 표: 득표수 내림차순, 동점이면 "문제로 표시된 시점이 최근인 순"
+// (막 새로 문제로 올라온 항목이 정리 화면 위쪽에 보이도록 — 표는 아직 안 갈렸지만 최신 이슈를 먼저 보게 함)
+function sortProblemsByVotesMostRecentFirst(notes, votes) {
+  return [...notes].sort((a, b) => {
+    const voteDiff = (votes[b.id]?.length || 0) - (votes[a.id]?.length || 0);
+    if (voteDiff !== 0) return voteDiff;
+    return (b.problemMarkedAt || 0) - (a.problemMarkedAt || 0);
+  });
+}
+
 // ===== 4번: 과정+결과 문서화 (표 중심) =====
 // 앱 내 문서 뷰와 다운로드가 같은 데이터를 쓰도록, 표에 필요한 값을 한 곳에서 계산한다.
 function buildDocModel(project, board) {
@@ -148,137 +195,30 @@ function buildDocModel(project, board) {
     title: t.title,
     notes: board.notes.filter((n) => n.topicId === t.id),
   }));
-  const problemNotes = board.notes.filter((n) => n.isProblem);
-  const ranked = problemNotes
-    .map((n) => ({ ...n, votes: board.votes[n.id]?.length || 0, voters: board.votes[n.id] || [] }))
-    .sort((a, b) => b.votes - a.votes);
+  const problemNotesRaw = board.notes.filter((n) => n.isProblem);
+  // "문제 정리" 표 순서 = 문제 정리 탭과 동일한 기준(득표순, 동점이면 최근 표시순)
+  const problemNotes = sortProblemsByVotesMostRecentFirst(problemNotesRaw, board.votes);
+  // "우선순위 TOP" 순서 = 우선순위 결과 탭과 동일한 기준(득표순, 동점이면 빠른 표시순)
+  const ranked = sortProblemsByVotesEarliestFirst(problemNotesRaw, board.votes).map((n) => ({
+    ...n,
+    votes: board.votes[n.id]?.length || 0,
+    voters: board.votes[n.id] || [],
+  }));
   const topRanked = ranked.slice(0, 5);
-  return { participants, notesByTopic, problemNotes, ranked, topRanked };
-}
-
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
-// 다운로드용 자립형 HTML 문서 문자열 생성 (브라우저에서 바로 열람·인쇄 가능)
-// docType: "process"(과정 전체) | "result"(우선순위 TOP 5 결과만)
-function buildDocHtml(project, board, docType = "process") {
-  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
-  const dateStr = new Date().toLocaleString("ko-KR");
-  const topVote = ranked[0];
-
-  const style = `
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic",sans-serif;color:#242424;max-width:860px;margin:0 auto;padding:40px 24px;line-height:1.6}
-  h1{font-size:26px;margin:0 0 4px}
-  .sub{color:#888;font-size:13px;margin-bottom:32px}
-  h2{font-size:18px;margin:36px 0 12px;padding-bottom:6px;border-bottom:2px solid #eee}
-  table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{border:1px solid #e0e0e0;padding:9px 12px;text-align:left;vertical-align:top}
-  thead th{background:#e9e9e9;font-weight:700}
-  tbody th{background:#f2f2f2;width:160px;white-space:nowrap}
-  .chip{display:inline-block;border-radius:6px;padding:2px 10px;font-size:12px;font-weight:600}
-  .empty{color:#aaa}
-  .rank1 td{background:#fdf3f7}
-  .desc{color:#777;font-size:12.5px;margin-top:3px}
-  footer{margin-top:40px;color:#aaa;font-size:12px;text-align:center}`;
-
-  if (docType === "result") {
-    const overviewRows = [
-      ["프로젝트명", esc(project.title)],
-      ["문서 생성일시", esc(dateStr)],
-      ["문제로 표시된 의견 수", `${problemNotes.length}개`],
-      ["최다 득표", topVote ? `${esc(topVote.text)} (${topVote.votes}표)` : "—"],
-    ]
-      .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
-      .join("");
-
-    const topRows = topRanked.length
-      ? topRanked
-          .map(
-            (p, i) =>
-              `<tr${i === 0 ? ' class="rank1"' : ""}><td>${i + 1}</td><td>${esc(p.text)}${p.description ? `<div class="desc">설명: ${esc(p.description)}</div>` : ""}</td><td>${p.votes}표</td><td>${esc(p.voters.join(", ")) || "—"}</td></tr>`
-          )
-          .join("")
-      : `<tr><td colspan="4" class="empty">결과가 없습니다.</td></tr>`;
-
-    return `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>${esc(project.title)} — 결과 문서</title>
-<style>${style}</style></head><body>
-<h1>${esc(project.title)}</h1>
-<div class="sub">Onalign 퍼실리테이션 결과 문서 · ${esc(dateStr)}</div>
-
-<h2>1. 개요</h2>
-<table><tbody>${overviewRows}</tbody></table>
-
-<h2>2. 우선순위 TOP 5 결과</h2>
-<table><thead><tr><th>순위</th><th>문제</th><th>득표</th><th>투표자</th></tr></thead><tbody>${topRows}</tbody></table>
-
-<footer>Generated by Onalign</footer>
-</body></html>`;
-  }
-
-  // docType === "process": 과정 전체 (개요·참여자·의견 모음·문제 정리)
-  const overviewRows = [
-    ["프로젝트명", esc(project.title)],
-    ["문서 생성일시", esc(dateStr)],
-    ["참여자 수", `${participants.length}명`],
-    ["작성된 의견 수", `${board.notes.length}개`],
-    ["문제로 표시된 의견 수", `${problemNotes.length}개`],
-  ]
-    .map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`)
-    .join("");
-
-  const participantRows = participants.length
-    ? participants
-        .map(
-          (p) =>
-            `<tr><td>${esc(p.name)}</td><td><span class="chip" style="background:${p.color.bg};color:${p.color.text};border:1px solid ${p.color.border}">${p.color.name}</span></td></tr>`
-        )
-        .join("")
-    : `<tr><td colspan="2" class="empty">참여자가 없습니다.</td></tr>`;
-
-  const opinionRows = board.notes.length
-    ? notesByTopic
-        .flatMap((t) =>
-          t.notes.map(
-            (n) =>
-              `<tr><td>${esc(t.title)}</td><td>${esc(n.text) || '<span class="empty">(빈 포스트잇)</span>'}${n.isProblem ? ' <span class="chip" style="background:#fdecec;color:#c0392b;border:1px solid #eab5b0">문제</span>' : ""}</td><td>${esc(n.authors.join(", "))}</td></tr>`
-          )
-        )
-        .join("")
-    : `<tr><td colspan="3" class="empty">작성된 의견이 없습니다.</td></tr>`;
-
-  const problemRows = problemNotes.length
-    ? problemNotes
-        .map(
-          (n, i) =>
-            `<tr><td>${i + 1}</td><td>${esc(n.text)}${n.description ? `<div class="desc">설명: ${esc(n.description)}</div>` : ""}</td><td>${esc(n.authors.join(", "))}</td></tr>`
-        )
-        .join("")
-    : `<tr><td colspan="3" class="empty">문제로 표시된 의견이 없습니다.</td></tr>`;
-
-  return `<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>${esc(project.title)} — 과정 문서</title>
-<style>${style}</style></head><body>
-<h1>${esc(project.title)}</h1>
-<div class="sub">Onalign 퍼실리테이션 과정 문서 · ${esc(dateStr)}</div>
-
-<h2>1. 개요</h2>
-<table><tbody>${overviewRows}</tbody></table>
-
-<h2>2. 참여자</h2>
-<table><thead><tr><th>이름</th><th>배정 색상</th></tr></thead><tbody>${participantRows}</tbody></table>
-
-<h2>3. 의견 모음 (과정)</h2>
-<table><thead><tr><th>주제</th><th>내용</th><th>작성자</th></tr></thead><tbody>${opinionRows}</tbody></table>
-
-<h2>4. 문제 정리 및 부가 설명</h2>
-<table><thead><tr><th>#</th><th>문제</th><th>작성자</th></tr></thead><tbody>${problemRows}</tbody></table>
-
-<footer>Generated by Onalign</footer>
-</body></html>`;
+  // 문서 표준 필드(프로젝트당 1개) — 과정/결과 문서 공통
+  const docFields = board.docFields || {};
+  // 완료(done)한 참여자의 KPT만 문서에 누적. users 키잉을 그대로 사용해 참여자 순서 유지.
+  const completedRetros = participants
+    .map((p) => ({ name: p.name, color: p.color, ...(board.retros?.[p.name] || {}) }))
+    .filter((r) => r.done);
+  // 회고 탭 토글이 ON일 때만 우선순위 해결여부를 문서에 포함(득표순 문제 + 해결여부)
+  const priorityCheckOn = board.retroPriorityCheck !== false;
+  const resolutionRows = priorityCheckOn
+    ? ranked.map((n) => ({ id: n.id, text: n.text, votes: n.votes, resolution: board.priorityResolution?.[n.id] || "" }))
+    : [];
+  // 회의록 녹음(헤더)으로 누적한 전체 녹취록 — 있을 때만 "회의 녹취록" 섹션으로 문서에 포함
+  const minutes = (board.minutes || "").trim();
+  return { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes };
 }
 
 function mdEsc(s) {
@@ -287,9 +227,53 @@ function mdEsc(s) {
 
 // 다운로드용 마크다운 문서 문자열 생성 (노션·구글독스 등에 붙여넣기 좋은 표 형식)
 function buildDocMarkdown(project, board, docType = "process") {
-  const { participants, notesByTopic, problemNotes, ranked, topRanked } = buildDocModel(project, board);
+  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes } = buildDocModel(project, board);
   const dateStr = new Date().toLocaleString("ko-KR");
   const topVote = ranked[0];
+
+  // 회의 녹취록 — 회의록 녹음 내용이 있을 때만 (표가 아닌 본문이라 줄바꿈만 유지)
+  const minutesSection = minutes ? `## 회의 녹취록\n\n${minutes.replace(/\r?\n/g, "  \n")}` : "";
+
+  // 문서 표준 정보(목적/배경/추진 방향/기대 효과) — 과정/결과 공통, 항상 최상단
+  const fieldsSection = `## 문서 표준 정보
+
+| 항목 | 내용 |
+| --- | --- |
+${[
+    ["목적", docFields.purpose],
+    ["배경", docFields.background],
+    ["추진 방향", docFields.direction],
+    ["기대 효과", docFields.expected],
+  ]
+    .map(([k, v]) => `| ${mdEsc(k)} | ${v && v.trim() ? mdEsc(v) : "—"} |`)
+    .join("\n")}`;
+
+  // 우선순위 해결여부 (회고 토글 ON일 때만)
+  const resolutionSection = priorityCheckOn
+    ? `## 우선순위 해결여부
+
+| # | 문제 | 득표 | 해결여부 |
+| --- | --- | --- | --- |
+${
+        resolutionRows.length
+          ? resolutionRows.map((r, i) => `| ${i + 1} | ${mdEsc(r.text)} | ${r.votes}표 | ${RESOLUTION_LABELS[r.resolution] || "미정"} |`).join("\n")
+          : "| - | 우선순위로 정리된 문제가 없습니다. | - | - |"
+      }`
+    : "";
+
+  // 회고(KPT) — 완료한 참여자만
+  const retroSection = `## 회고 (KPT)
+
+${
+    completedRetros.length
+      ? completedRetros
+          .map(
+            (r) =>
+              `### ${r.name}\n\n| 구분 | 내용 |\n| --- | --- |\n| Keep | ${r.keep && r.keep.trim() ? mdEsc(r.keep) : "—"} |\n| Problem | ${r.problem && r.problem.trim() ? mdEsc(r.problem) : "—"} |\n| Try | ${r.try && r.try.trim() ? mdEsc(r.try) : "—"} |`
+          )
+          .join("\n\n")
+      : "완료된 회고가 없습니다."
+  }`;
 
   if (docType === "result") {
     const overviewRows = [
@@ -314,17 +298,25 @@ function buildDocMarkdown(project, board, docType = "process") {
 
 Onalign 퍼실리테이션 결과 문서 · ${dateStr}
 
-## 1. 개요
+${fieldsSection}
+
+## 개요
 
 | 항목 | 내용 |
 | --- | --- |
 ${overviewRows}
 
-## 2. 우선순위 TOP 5 결과
+## 우선순위 TOP 5 결과
 
 | 순위 | 문제 | 득표 | 투표자 |
 | --- | --- | --- | --- |
 ${topRows}
+
+${resolutionSection}
+
+${retroSection}
+
+${minutesSection}
 
 ---
 Generated by Onalign
@@ -370,33 +362,227 @@ Generated by Onalign
 
 Onalign 퍼실리테이션 과정 문서 · ${dateStr}
 
-## 1. 개요
+${fieldsSection}
+
+## 개요
 
 | 항목 | 내용 |
 | --- | --- |
 ${overviewRows}
 
-## 2. 참여자
+## 참여자
 
 | 이름 | 배정 색상 |
 | --- | --- |
 ${participantRows}
 
-## 3. 의견 모음 (과정)
+## 의견 모음 (과정)
 
 | 주제 | 내용 | 작성자 |
 | --- | --- | --- |
 ${opinionRows}
 
-## 4. 문제 정리 및 부가 설명
+## 문제 정리 및 부가 설명
 
 | # | 문제 | 작성자 |
 | --- | --- | --- |
 ${problemRows}
 
+${resolutionSection}
+
+${retroSection}
+
+${minutesSection}
+
 ---
 Generated by Onalign
 `;
+}
+
+// ===== docx(Word) 다운로드 =====
+// HTML/마크다운 다운로드와 동일하게 buildDocModel의 계산 결과를 그대로 재사용한다(원본 하나, 표현만 다름).
+// 표 셀 하나에 여러 줄이 들어갈 수 있으므로(부가 설명, 회의 녹취록 등) 줄바꿈마다 별도 Paragraph로 나눠 넣는다.
+function docCellParagraphs(text, { bold = false } = {}) {
+  const str = text == null ? "" : String(text);
+  const lines = str.trim() ? str.split(/\r?\n/) : ["—"];
+  return lines.map(
+    (line) =>
+      new Paragraph({
+        children: [new TextRun({ text: line, bold, italics: !str.trim() })],
+      })
+  );
+}
+
+function docCell(text, { header = false, widthPct } = {}) {
+  return new TableCell({
+    width: widthPct ? { size: widthPct, type: WidthType.PERCENTAGE } : undefined,
+    shading: header ? { fill: "E9E9E9" } : undefined,
+    children: docCellParagraphs(text, { bold: header }),
+  });
+}
+
+// 라벨(굵게, 회색 배경) | 값 형태의 세로 표 (문서 표준 정보, 개요 등)
+function docKvTable(pairs) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: pairs.map(
+      ([k, v]) =>
+        new TableRow({
+          children: [docCell(k, { header: true, widthPct: 25 }), docCell(v)],
+        })
+    ),
+  });
+}
+
+// 헤더 행 + 데이터 행으로 이뤄진 표 (의견 모음, 우선순위 TOP 5 등)
+function docDataTable(headers, rows) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({ tableHeader: true, children: headers.map((h) => docCell(h, { header: true })) }),
+      ...rows.map((r) => new TableRow({ children: r.map((c) => docCell(c)) })),
+    ],
+  });
+}
+
+function docSectionHeading(text) {
+  return new Paragraph({ text, heading: HeadingLevel.HEADING_1, spacing: { before: 320, after: 120 } });
+}
+
+function docSpacer() {
+  return new Paragraph({ text: "", spacing: { after: 80 } });
+}
+
+// 다운로드용 Word(.docx) 문서 생성. HTML 버전과 같은 구성(문서 표준 정보 → 개요 → 본문 → 우선순위 해결여부 → 회고 → 회의 녹취록)을
+// Word의 제목 스타일(Heading)과 표 기능으로 그대로 옮긴다.
+function buildDocDocx(project, board, docType = "process") {
+  const { participants, notesByTopic, problemNotes, ranked, topRanked, docFields, completedRetros, priorityCheckOn, resolutionRows, minutes } = buildDocModel(project, board);
+  const dateStr = new Date().toLocaleString("ko-KR");
+  const topVote = ranked[0];
+  const isResult = docType === "result";
+
+  const children = [
+    new Paragraph({ text: project.title, heading: HeadingLevel.TITLE }),
+    new Paragraph({
+      children: [new TextRun({ text: `Onalign 퍼실리테이션 ${isResult ? "결과" : "과정"} 문서 · ${dateStr}`, color: "888888", size: 20 })],
+      spacing: { after: 200 },
+    }),
+
+    docSectionHeading("문서 표준 정보"),
+    docKvTable([
+      ["목적", docFields.purpose],
+      ["배경", docFields.background],
+      ["추진 방향", docFields.direction],
+      ["기대 효과", docFields.expected],
+    ]),
+    docSpacer(),
+
+    docSectionHeading("개요"),
+    docKvTable(
+      isResult
+        ? [
+            ["프로젝트명", project.title],
+            ["문서 생성일시", dateStr],
+            ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+            ["최다 득표", topVote ? `${topVote.text} (${topVote.votes}표)` : "—"],
+          ]
+        : [
+            ["프로젝트명", project.title],
+            ["문서 생성일시", dateStr],
+            ["참여자 수", `${participants.length}명`],
+            ["작성된 의견 수", `${board.notes.length}개`],
+            ["문제로 표시된 의견 수", `${problemNotes.length}개`],
+          ]
+    ),
+    docSpacer(),
+  ];
+
+  if (isResult) {
+    children.push(
+      docSectionHeading("우선순위 TOP 5 결과"),
+      docDataTable(
+        ["순위", "문제", "득표", "투표자"],
+        topRanked.length
+          ? topRanked.map((p, i) => [String(i + 1), p.description ? `${p.text}\n설명: ${p.description}` : p.text, `${p.votes}표`, p.voters.join(", ") || "—"])
+          : [["-", "결과가 없습니다.", "-", "-"]]
+      ),
+      docSpacer()
+    );
+  } else {
+    children.push(
+      docSectionHeading("참여자"),
+      docDataTable(
+        ["이름", "배정 색상"],
+        participants.length ? participants.map((p) => [p.name, p.color.name]) : [["-", "참여자가 없습니다."]]
+      ),
+      docSpacer(),
+
+      docSectionHeading("의견 모음 (과정)"),
+      docDataTable(
+        ["주제", "내용", "작성자"],
+        board.notes.length
+          ? notesByTopic.flatMap((t) => t.notes.map((n) => [t.title, (n.text || "(빈 포스트잇)") + (n.isProblem ? " [문제]" : ""), n.authors.join(", ")]))
+          : [["-", "작성된 의견이 없습니다.", "-"]]
+      ),
+      docSpacer(),
+
+      docSectionHeading("문제 정리 및 부가 설명"),
+      docDataTable(
+        ["#", "문제", "작성자"],
+        problemNotes.length
+          ? problemNotes.map((n, i) => [String(i + 1), n.description ? `${n.text}\n설명: ${n.description}` : n.text, n.authors.join(", ")])
+          : [["-", "문제로 표시된 의견이 없습니다.", "-"]]
+      ),
+      docSpacer()
+    );
+  }
+
+  if (priorityCheckOn) {
+    children.push(
+      docSectionHeading("우선순위 해결여부"),
+      docDataTable(
+        ["#", "문제", "득표", "해결여부"],
+        resolutionRows.length
+          ? resolutionRows.map((r, i) => [String(i + 1), r.text, `${r.votes}표`, RESOLUTION_LABELS[r.resolution] || "미정"])
+          : [["-", "우선순위로 정리된 문제가 없습니다.", "-", "-"]]
+      ),
+      docSpacer()
+    );
+  }
+
+  children.push(docSectionHeading("회고 (KPT)"));
+  if (completedRetros.length) {
+    completedRetros.forEach((r) => {
+      children.push(
+        new Paragraph({ text: r.name, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 80 } }),
+        docKvTable([
+          ["Keep", r.keep],
+          ["Problem", r.problem],
+          ["Try", r.try],
+        ]),
+        docSpacer()
+      );
+    });
+  } else {
+    children.push(new Paragraph({ children: [new TextRun({ text: "완료된 회고가 없습니다.", italics: true, color: "888888" })] }), docSpacer());
+  }
+
+  if (minutes) {
+    children.push(docSectionHeading("회의 녹취록"), ...docCellParagraphs(minutes), docSpacer());
+  }
+
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: "Generated by Onalign", color: "aaaaaa", size: 18 })],
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 240 },
+    })
+  );
+
+  return new Document({
+    styles: { default: { document: { run: { font: "맑은 고딕", size: 22 } } } },
+    sections: [{ children }],
+  });
 }
 
 // ===== 2번 관련: 작업 흐름 안내 투어 (세션당 1회) =====
@@ -410,9 +596,11 @@ const TOUR_STEPS = [
   { target: "vote-status", screen: "opinion", text: "문제로 표시된 의견에 투표하세요" },
   { target: "problem-area", screen: "problem", text: "문제 문구를 여기서 다듬으세요" },
   { target: "vote-area", screen: "voting", text: "득표순 결과를 확인하세요" },
-  { target: "save-image", screen: "voting", text: "결과를 문서·이미지로 남겨보세요" },
-  { target: "doc-type-process", screen: "document", text: "과정 문서에서는 의견 작성부터 문제 정리까지의 진행 과정을 확인할 수 있어요" },
-  { target: "doc-type-result", screen: "document", text: "결과 문서(문제 우선순위 TOP 5)에서는 최종 우선순위 TOP 5만 간추려 볼 수 있어요" },
+  { target: "retro-priority", screen: "retro", text: "회고 단계예요. 우선순위로 정한 문제들이 이번에 해결됐는지 여기서 함께 점검하세요 (필요 없으면 토글을 꺼도 됩니다)" },
+  { target: "retro-kpt", screen: "retro", text: "각자 Keep·Problem·Try를 적고 '완료'를 누르세요. 완료한 사람의 회고가 문서에 자동으로 담기고, 완료 후에도 수정하면 문서에 바로 반영돼요" },
+  { target: "doc-type-process", screen: "document", text: "과정 문서에는 표준 정보(목적·배경·추진 방향·기대 효과)와 의견·문제 정리, 완료된 회고까지 한 흐름으로 정리돼요" },
+  { target: "doc-type-result", screen: "document", text: "결과 문서에는 우선순위 TOP 5와 해결여부, 완료된 회고가 간추려 담겨요" },
+  { target: "doc-download", screen: "document", text: "완성된 문서를 이미지·docx·마크다운으로 저장하거나, 프롬프트로 추출해 AI에게 정리를 맡기세요" },
 ];
 
 function guideDoneThisSession() {
@@ -518,7 +706,9 @@ function GuideCoach({ phase, onGotoScreen }) {
     setStep(step + 1);
   };
 
-  if (!active || !rect || active.screen !== phase) return null;
+  // 현재 화면이 아니거나 아직 단계가 없으면 아무것도 그리지 않는다.
+  // rect가 없어도(대상 요소가 화면에 없어도) 안내는 계속돼야 하므로 여기서 끝내지 않는다.
+  if (!active || active.screen !== phase) return null;
 
   // 화면이 좁아져도 말풍선이 밖으로 나가지 않도록: 폭은 뷰포트에 맞춰 줄이고,
   // 위치는 실측 크기(bubbleSize) 기준으로 좌우/상하 여백 안쪽으로 클램프한다.
@@ -528,18 +718,27 @@ function GuideCoach({ phase, onGotoScreen }) {
   const bubbleWidth = Math.min(250, viewportW - margin * 2);
   const bubbleHeight = bubbleSize.height || 120;
 
-  const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
-  const left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
-
-  const spaceBelow = viewportH - rect.bottom;
-  const spaceAbove = rect.top;
-  const below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
-  const top = below
-    ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
-    : Math.max(rect.top - 14 - bubbleHeight, margin);
-
-  // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
-  const arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
+  // 대상 요소가 없을 때(예: 온보딩 중 비어 있는 "문제 정리" 탭)는 하이라이트 없이
+  // 화면 중앙에 안내만 띄워 투어 흐름이 끊기지 않게 한다.
+  const hasRect = !!rect;
+  let left, top, below, arrowLeft;
+  if (hasRect) {
+    const idealLeft = rect.left + rect.width / 2 - bubbleWidth / 2;
+    left = Math.min(Math.max(idealLeft, margin), Math.max(margin, viewportW - bubbleWidth - margin));
+    const spaceBelow = viewportH - rect.bottom;
+    const spaceAbove = rect.top;
+    below = spaceBelow >= bubbleHeight + 24 || spaceBelow >= spaceAbove;
+    top = below
+      ? Math.min(rect.bottom + 14, viewportH - bubbleHeight - margin)
+      : Math.max(rect.top - 14 - bubbleHeight, margin);
+    // 화살표는 말풍선이 가장자리에 밀려도 실제 대상 쪽을 가리키도록 상대 위치로 계산
+    arrowLeft = Math.min(Math.max(rect.left + rect.width / 2 - left, 16), bubbleWidth - 16);
+  } else {
+    left = Math.max(margin, (viewportW - bubbleWidth) / 2);
+    top = Math.max(margin, (viewportH - bubbleHeight) / 2);
+    below = true;
+    arrowLeft = -100; // 대상이 없으면 화살표는 숨긴다
+  }
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
@@ -549,7 +748,7 @@ function GuideCoach({ phase, onGotoScreen }) {
           안 읽고 넘어가는 문제가 있어, 가이드를 다 보거나 건너뛰어야만 다음 작업이 가능하도록 강제한다. */}
       <style>{`@keyframes onalignPulse{0%{box-shadow:0 0 0 0 rgba(114,201,172,.55)}70%{box-shadow:0 0 0 8px rgba(114,201,172,0)}100%{box-shadow:0 0 0 0 rgba(114,201,172,0)}}`}</style>
 
-      {active.target !== "vote-area" && (
+      {hasRect && active.target !== "vote-area" && (
         <div
           style={{
             position: "absolute",
@@ -586,17 +785,19 @@ function GuideCoach({ phase, onGotoScreen }) {
           boxSizing: "border-box",
         }}
       >
-        <div
-          style={{
-            position: "absolute",
-            left: arrowLeft - 6,
-            transform: "rotate(45deg)",
-            width: 12,
-            height: 12,
-            background: "#242424",
-            ...(below ? { top: -6 } : { bottom: -6 }),
-          }}
-        />
+        {hasRect && (
+          <div
+            style={{
+              position: "absolute",
+              left: arrowLeft - 6,
+              transform: "rotate(45deg)",
+              width: 12,
+              height: 12,
+              background: "#242424",
+              ...(below ? { top: -6 } : { bottom: -6 }),
+            }}
+          />
+        )}
         <div style={{ fontSize: 11, color: "#8a8a8a", marginBottom: 6, position: "relative" }}>
           가이드 {step + 1} / {TOUR_STEPS.length}
         </div>
@@ -623,7 +824,7 @@ function GuideCoach({ phase, onGotoScreen }) {
 // 1번: 모든 화면 최상단에 고정되는 로고 영역. 로고는 랜딩 페이지(첫 화면)로,
 // "내 프로젝트"는 앱 내 프로젝트 목록 화면으로 이동한다. right에 화면별 우측 콘텐츠(프로필 등)를 넣는다.
 // onSaveImage가 주어지면(보드 화면에서만) "내 프로젝트" 옆에 "이미지로 저장"을 같은 텍스트 스타일로 붙인다.
-function TopBar({ onProjects, onSaveImage, right }) {
+function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, minutesRecording, user, onSignOut, dotColor, right }) {
   const goHome = () => {
     window.location.href = "/";
   };
@@ -649,14 +850,40 @@ function TopBar({ onProjects, onSaveImage, right }) {
           flexWrap: "wrap",
         }}
       >
-        <Logo onClick={goHome} height={34} />
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {/* 로고 + "내 프로젝트"를 왼쪽에 배치. "내 프로젝트"는 우측 버튼 줄과 같은 세로 패딩을 가져
+            버튼 줄과 같은 높이·중심선에 놓이게 한다(로고 높이가 위치를 좌우하지 않도록). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <Logo onClick={goHome} height={30} />
           <button
             onClick={onProjects}
-            style={{ border: "none", background: "none", color: "#6f6b66", fontSize: 15, fontWeight: 600, cursor: "pointer", padding: 0 }}
+            style={{ border: "none", background: "none", color: "#6f6b66", fontSize: 15, fontWeight: 600, cursor: "pointer", padding: "10.5px 2px 5.5px 2px", lineHeight: 1, whiteSpace: "nowrap" }}
           >
             내 프로젝트
           </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          {onCopyLink && (
+            <button
+              onClick={onCopyLink}
+              title="팀원과 공유할 링크 복사 (링크로 들어오면 로그인 후 바로 이 프로젝트로 진입)"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: linkCopied ? "#e6f7f1" : "#fff",
+                border: `1px solid ${linkCopied ? "#a9e6d3" : "rgba(36,35,34,.14)"}`,
+                borderRadius: 9,
+                padding: "8px 13px",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+                color: linkCopied ? "#1e7a4d" : "#242322",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {linkCopied ? "✓ 복사됨" : "링크 복사"}
+            </button>
+          )}
           {onSaveImage && (
             <button
               data-guide="save-image"
@@ -681,8 +908,51 @@ function TopBar({ onProjects, onSaveImage, right }) {
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              이미지로 저장
+              전체 화면 이미지로 저장
             </button>
+          )}
+          {onMinutes && (
+            <button
+              onClick={onMinutes}
+              title="전체 회의를 녹음해 회의록으로 만듭니다"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: minutesRecording ? "#fdeaea" : "#fff",
+                border: `1px solid ${minutesRecording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
+                borderRadius: 9,
+                padding: "8px 13px",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+                color: minutesRecording ? "#d32f2f" : "#242322",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: minutesRecording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+              {minutesRecording ? "회의록 녹음 중" : "회의록 녹음"}
+            </button>
+          )}
+          {/* 구글 로그인 사용자 정보 + 로그아웃. 보드 화면에서는 dotColor로 참여자 색상 점도
+              같은 배지 안에 합쳐서 보여준다(따로 뱃지를 두 개 두지 않는다). 로그인 안 했으면
+              아무것도 표시하지 않는다(로그인 유도는 "내 프로젝트" 화면 본문의 큰 버튼이 담당). */}
+          {user && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                title={user.email || ""}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {dotColor && <span style={{ width: 15, height: 15, borderRadius: 999, background: dotColor, flexShrink: 0 }} />}
+                {user.user_metadata?.full_name || user.user_metadata?.name || user.email}
+              </span>
+              <button
+                onClick={onSignOut}
+                style={{ border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#8a857f", borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+              >
+                로그아웃
+              </button>
+            </div>
           )}
           {right}
         </div>
@@ -692,12 +962,22 @@ function TopBar({ onProjects, onSaveImage, right }) {
 }
 
 export default function FacilitationBoard() {
+  const { user, authLoading, signInWithGoogle, signOut } = useAuth();
+  // 공유 링크(?p=프로젝트id)로 들어온 경우: 로그인은 여전히 필수지만(팀원도 구글 로그인 필요),
+  // 로그인만 하면 "내 프로젝트" 목록을 거치지 않고 이 프로젝트로 바로 진입시킨다.
+  // setSharedProjectId로 지울 수 있어야 한다: 링크로 들어온 뒤 "내 프로젝트"를 눌러 목록으로
+  // 돌아가려 할 때, 이 값이 남아있으면 아래 effect가 같은 프로젝트로 계속 되돌려보낸다.
+  const [sharedProjectId, setSharedProjectId] = useState(() => new URLSearchParams(window.location.search).get("p"));
+  const claimedIdsRef = useRef(new Set()); // owner_id 귀속 시도를 프로젝트별로 1회만 하도록(다른 프로젝트로 넘어가도 각자 새로 시도돼야 함)
+  const [copiedLinkId, setCopiedLinkId] = useState(null); // "내 프로젝트" 목록에서 링크 복사 완료 피드백(일시적)
+  const [boardLinkCopied, setBoardLinkCopied] = useState(false); // 작업 화면 헤더의 링크 복사 완료 피드백(일시적)
   const [projects, setProjects] = useState(null);
   const [selectedProject, setSelectedProject] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState(""); // 프로젝트 목표 한 줄(선택 입력)
-  const [name, setName] = useState(null);
-  const [nameInput, setNameInput] = useState("");
+  // 참여자 이름은 더 이상 직접 입력받지 않는다 — 팀원도 구글 로그인이 필수라, 로그인된
+  // 계정의 표시 이름을 그대로 참여 신원으로 쓴다(로그아웃 상태면 null).
+  const name = displayNameOf(user);
   const [board, setBoard] = useState(emptyBoard());
   const [loaded, setLoaded] = useState(false);
   const [justCreatedId, setJustCreatedId] = useState(null);
@@ -706,10 +986,29 @@ export default function FacilitationBoard() {
   const [confirmState, setConfirmState] = useState(null); // { title, message, confirmLabel, onConfirm }
   const [docType, setDocType] = useState("process"); // "문서" 탭에서 선택한 문서 종류: 과정 | 결과(TOP 5)
   const [parkingOpen, setParkingOpen] = useState(false); // 보류함 접이식 섹션 열림 여부 (기본 닫힘)
+  const [docxDownloading, setDocxDownloading] = useState(false); // docx 생성 중 다운로드 버튼 비활성화용
+  const [promptCopied, setPromptCopied] = useState(false); // "프롬프트 추출" 복사 완료 피드백(일시적)
+  // ===== 음성 녹음 → 텍스트 변환 (Web Speech API, 마이크 입력 기준) =====
+  // recording 상태(board.recording)는 참여자 모두에게 보이는 공유 배지지만, 실제 음성 인식은
+  // "녹음 버튼을 누른 이 브라우저"에서만 로컬로 돌아간다. 인식 결과도 이 브라우저에 로컬로 쌓인다.
+  // 회의록 녹음(헤더): 마이크 음성을 Web Speech API로 실시간 텍스트화해 전체 회의 녹취록을 누적한다.
+  // .txt 다운로드 + 문서 탭 "회의 녹취록" 섹션에 반영된다. (마이크가 하나라 녹음은 이 한 종류만 둔다.)
+  const [micRecording, setMicRecording] = useState(false); // 이 브라우저에서 실제 인식이 돌고 있는지
+  const [minutes, setMinutes] = useState(""); // 확정된 회의 녹취록(누적)
+  const [minutesInterim, setMinutesInterim] = useState(""); // 인식 중인 임시 텍스트(아직 확정 전)
+  const [minutesOpen, setMinutesOpen] = useState(false); // 회의록 패널 열림 여부
+  const minutesRef = useRef(""); // onresult 콜백에서 최신 녹취록을 참조하기 위한 ref
+  const [speechSupported, setSpeechSupported] = useState(true); // 브라우저가 Web Speech API를 지원하는지
+  const recognitionRef = useRef(null); // SpeechRecognition 인스턴스
+  const wantRecordingRef = useRef(false); // 사용자가 "녹음 중"을 의도하는지 (자동 재시작 판단용)
   const boardRef = useRef(board);
   boardRef.current = board;
   // 드래그 중이거나 포스트잇을 편집 중일 때는 2초 폴링이 로컬 변경을 덮어쓰지 않도록 잠시 멈춘다
   const suspendPollRef = useRef(false);
+  // 회의록 저장(loadBoard+saveBoard) 도중에는 "서버 값 동기화" effect가 옛 board.minutes로
+  // minutesRef를 덮어쓰지 않도록 막는다. stopRecognition()의 setMicRecording(false)가 저장 완료
+  // 전에 리렌더를 일으켜 그 effect를 먼저 실행시키는 경합(race)이 있었다 — 이 플래그로 막는다.
+  const minutesSyncSuspendRef = useRef(false);
   // 보류함 항목 클릭 시 원래 의견 보드로 스크롤 이동하기 위한 topic별 DOM 참조
   const topicRefs = useRef({});
   // "이미지로 저장": 현재 탭에 실제로 렌더링된 화면 전체를 그대로 캡처하기 위한 DOM 참조
@@ -717,57 +1016,131 @@ export default function FacilitationBoard() {
   // 문서 탭 전용 "이미지로 저장": 다운로드 버튼 등 UI를 빼고 문서 내용(표)만 캡처하기 위한 DOM 참조
   const docContentRef = useRef(null);
 
-  // 프로젝트 인덱스 로드 (목록 화면에서 항상 최신 상태 유지)
+  // 폴링으로 마지막에 반영한 보드 원본(JSON 문자열). 값이 그대로면 setBoard를 건너뛰어
+  // 2초마다 전체 트리가 불필요하게 리렌더/리플로우되는 버벅임을 없앤다.
+  const lastBoardRawRef = useRef(null);
+  // 자동 높이 textarea들을 추적한다. 인라인 ref(매 렌더마다 새 함수 → 매 렌더 리플로우) 대신
+  // "마운트 때 1회 + 원격 변경 때만" 높이를 맞춰 입력/유휴 버벅임을 제거한다.
+  const autoSizeEls = useRef(new Set());
+  const autoSizeRef = useCallback((el) => {
+    if (el) {
+      autoSizeEls.current.add(el);
+      autoResizeTextarea(el);
+    }
+  }, []);
+  // 원격 변경(다른 참여자 편집)이 반영된 뒤에만 추적 중인 textarea 높이를 한 번에 다시 맞춘다.
+  const refitAutoSize = useCallback(() => {
+    autoSizeEls.current.forEach((el) => {
+      if (el.isConnected) autoResizeTextarea(el);
+      else autoSizeEls.current.delete(el);
+    });
+  }, []);
+
+  // 프로젝트 목록 로드. RLS 자체는 전체 열람을 허용하지만(공유 링크로 팀원이 들어와야 하므로),
+  // "내 프로젝트" 목록에는 로그인 여부에 따라 이 쿼리가 좁혀서 보여준다:
+  // 로그인 상태면 내 owner_id 것만, 비로그인이면 아직 아무도 귀속되지 않은(owner_id null) 것만.
   const loadProjects = useCallback(async () => {
     try {
-      const res = await storage.get(PROJECTS_INDEX_KEY, true);
-      setProjects(res && res.value ? JSON.parse(res.value) : []);
+      let query = supabase.from("projects").select("*").order("created_at", { ascending: false });
+      query = user ? query.eq("owner_id", user.id) : query.is("owner_id", null);
+      const { data, error } = await query;
+      if (error) throw error;
+      setProjects((data || []).map(fromDbProject));
     } catch (e) {
       setProjects([]);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
 
+  // 공유 링크(?p=id)로 들어온 경우 목록 화면을 거치지 않고 그 프로젝트를 바로 연다.
+  useEffect(() => {
+    if (!sharedProjectId || selectedProject) return;
+    (async () => {
+      const { data, error } = await supabase.from("projects").select("*").eq("id", sharedProjectId).maybeSingle();
+      if (!error && data) setSelectedProject(fromDbProject(data));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedProjectId]);
+
+  // 오너 없이(owner_id null) 만들어진 기존 프로젝트에, 로그인한 사용자가 처음 접근하면 자동으로 귀속시킨다.
+  // 이미 다른 사람 소유로 확정된 프로젝트는 건드리지 않는다(.is("owner_id", null) 조건으로 서버에서도 보장).
+  useEffect(() => {
+    if (!user || !selectedProject || selectedProject.ownerId || claimedIdsRef.current.has(selectedProject.id)) return;
+    claimedIdsRef.current.add(selectedProject.id);
+    (async () => {
+      const { data, error } = await supabase
+        .from("projects")
+        .update({ owner_id: user.id })
+        .eq("id", selectedProject.id)
+        .is("owner_id", null)
+        .select()
+        .maybeSingle();
+      if (!error && data) setSelectedProject(fromDbProject(data));
+    })();
+  }, [user, selectedProject]);
+
   const createProject = async () => {
     const title = newProjectTitle.trim();
     if (!title) return;
-    const project = { id: uid(), title, goal: newProjectGoal.trim(), createdAt: Date.now() };
-    const nextList = [project, ...(projects || [])];
-    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
-    await storage.set(boardKeyOf(project.id), JSON.stringify(emptyBoard()), true);
-    setProjects(nextList);
+    const id = uid();
+    const row = {
+      id,
+      title,
+      goal: newProjectGoal.trim(),
+      owner_id: user ? user.id : null,
+      instructions: DEFAULT_INSTRUCTIONS,
+      votes_per_user: 3,
+    };
+    const { error } = await supabase.from("projects").insert(row);
+    if (error) {
+      console.error("프로젝트 생성 실패", error);
+      return;
+    }
+    await storage.set(boardKeyOf(id), JSON.stringify(emptyBoard()), true);
     setNewProjectTitle("");
     setNewProjectGoal("");
-    setSelectedProject(project);
+    setSelectedProject(fromDbProject(row));
+    loadProjects();
   };
 
-  // 프로젝트 목표 한 줄 수정. 프로젝트 메타데이터(PROJECTS_INDEX_KEY)에 저장되므로
-  // 목록과 현재 selectedProject 스냅샷을 함께 갱신해야 화면에 바로 반영된다.
+  // 프로젝트 목표 한 줄 수정. 참여자 누구나 가능(오너 전용 아님) — projects 테이블의 goal 컬럼은
+  // RLS가 전체 허용이라 그대로 업데이트한다.
   const updateProjectGoal = async (goalText) => {
     if (!selectedProject) return;
     const goal = goalText.trim();
-    const nextList = (projects || []).map((p) => (p.id === selectedProject.id ? { ...p, goal } : p));
-    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
-    setProjects(nextList);
+    const { error } = await supabase.from("projects").update({ goal }).eq("id", selectedProject.id);
+    if (error) {
+      console.error("목표 수정 실패", error);
+      return;
+    }
+    setProjects((prev) => (prev || []).map((p) => (p.id === selectedProject.id ? { ...p, goal } : p)));
     setSelectedProject((prev) => (prev ? { ...prev, goal } : prev));
   };
 
-  // 프로젝트 고정. 고정된 프로젝트는 목록 정렬 시 항상 위로 온다 (updateProjectGoal과 동일한 패턴으로 인덱스만 갱신)
+  // 프로젝트 고정. 고정된 프로젝트는 목록 정렬 시 항상 위로 온다
   const togglePinProject = async (id) => {
-    const nextList = (projects || []).map((p) => (p.id === id ? { ...p, pinned: !p.pinned } : p));
-    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
-    setProjects(nextList);
+    const target = (projects || []).find((p) => p.id === id);
+    if (!target) return;
+    const pinned = !target.pinned;
+    const { error } = await supabase.from("projects").update({ pinned }).eq("id", id);
+    if (error) {
+      console.error("고정 변경 실패", error);
+      return;
+    }
+    setProjects((prev) => (prev || []).map((p) => (p.id === id ? { ...p, pinned } : p)));
   };
 
   const deleteProject = async (id) => {
-    const nextList = (projects || []).filter((p) => p.id !== id);
-    await storage.set(PROJECTS_INDEX_KEY, JSON.stringify(nextList), true);
+    const { error } = await supabase.from("projects").delete().eq("id", id);
+    if (error) {
+      console.error("삭제 실패", error);
+      return;
+    }
     await storage.delete(boardKeyOf(id), true).catch(() => {});
-    clearSavedName(id);
-    setProjects(nextList);
+    setProjects((prev) => (prev || []).filter((p) => p.id !== id));
   };
 
   const backToProjects = () => {
@@ -777,6 +1150,14 @@ export default function FacilitationBoard() {
     setMergeMode(false);
     setSelected([]);
     setBoard(emptyBoard());
+    // 공유 링크(?p=)로 들어온 뒤 "내 프로젝트"로 돌아가는 경우: 이 값이 남아있으면 shared-link
+    // effect가 방금 나온 프로젝트로 다시 데려간다. 목록 화면으로 확실히 돌아가도록 지운다.
+    if (sharedProjectId) {
+      setSharedProjectId(null);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("p");
+      window.history.replaceState({}, "", url);
+    }
   };
 
   // 저장소에서 현재 프로젝트의 보드 상태를 읽어옴
@@ -785,13 +1166,33 @@ export default function FacilitationBoard() {
     try {
       const res = await storage.get(boardKeyOf(selectedProject.id), true);
       if (res && res.value) {
-        setBoard(normalizeBoard(JSON.parse(res.value)));
+        // 값이 지난번과 동일하면(내가 방금 저장한 값 포함) 리렌더를 건너뛴다 -> 유휴 시 버벅임 제거
+        if (res.value !== lastBoardRawRef.current) {
+          lastBoardRawRef.current = res.value;
+          setBoard(normalizeBoard(JSON.parse(res.value)));
+          // 원격 변경이 반영됐을 때만 페인트 후 자동높이 textarea를 다시 맞춘다(입력 중에는 실행 안 됨)
+          requestAnimationFrame(() => refitAutoSize());
+        }
       }
     } catch (e) {
       // key not created yet
     }
     setLoaded(true);
-  }, [selectedProject]);
+  }, [selectedProject, refitAutoSize]);
+
+  // selectedProject(projects 테이블 행)는 board와 달리 지금까지 폴링 대상이 아니었다.
+  // title/goal/pinned는 원래도 그랬지만, 이번에 instructions·votesPerUser까지 여기로 옮기면서
+  // "오너가 STEP 배너·투표권을 바꿔도 팀원 화면엔 새로고침 전까지 안 보이는" 회귀가 생겨 함께 폴링한다.
+  const lastProjectRawRef = useRef(null);
+  const refreshSelectedProject = useCallback(async () => {
+    if (!selectedProject) return;
+    const { data, error } = await supabase.from("projects").select("*").eq("id", selectedProject.id).maybeSingle();
+    if (error || !data) return;
+    const raw = JSON.stringify(data);
+    if (raw === lastProjectRawRef.current) return; // 변경 없으면 리렌더 생략(유휴 버벅임 방지, board 폴링과 동일 패턴)
+    lastProjectRawRef.current = raw;
+    setSelectedProject(fromDbProject(data));
+  }, [selectedProject?.id]);
 
   // 보드 상태를 통째로 저장. 여러 하위 키로 쪼개면 동시 수정 시 last-write-wins로 유실될 위험이 커서
   // 하나의 키 안에서 전체 객체를 갱신하는 방식을 쓴다
@@ -800,7 +1201,10 @@ export default function FacilitationBoard() {
       if (!selectedProject) return;
       setBoard(next);
       try {
-        await storage.set(boardKeyOf(selectedProject.id), JSON.stringify(next), true);
+        const str = JSON.stringify(next);
+        // 방금 저장한 값을 기억해, 다음 폴링이 같은 값을 읽어와도 리렌더하지 않게 한다
+        lastBoardRawRef.current = str;
+        await storage.set(boardKeyOf(selectedProject.id), str, true);
       } catch (e) {
         console.error("저장 실패", e);
       }
@@ -810,50 +1214,34 @@ export default function FacilitationBoard() {
 
   useEffect(() => {
     if (!selectedProject) return;
+    lastBoardRawRef.current = null; // 프로젝트가 바뀌면 이전 보드 원본 캐시를 비워 새로 로드되게 한다
     loadBoard();
     // 2초 간격 폴링으로 다른 참여자의 변경사항을 반영 (websocket 없이 유사 실시간 구현)
     // 단, 드래그나 텍스트 편집 중에는 건드리지 않는다 -> 안 그러면 끌던 포스트잇이 튀거나 타이핑 중 내용이 사라짐
     const iv = setInterval(() => {
-      if (!suspendPollRef.current) loadBoard();
+      if (!suspendPollRef.current) {
+        loadBoard();
+        refreshSelectedProject();
+      }
     }, 2000);
     return () => clearInterval(iv);
-  }, [selectedProject, loadBoard]);
+  }, [selectedProject, loadBoard, refreshSelectedProject]);
 
-  // 이름으로 참여(등록). joinBoard(수동 입력)과 자동 재진입이 함께 쓴다.
-  const doJoin = useCallback(
-    async (rawName) => {
-      const trimmed = (rawName || "").trim();
-      if (!trimmed || !selectedProject) return;
-      await loadBoard();
-      const current = boardRef.current;
-      const color = current.users[trimmed] ? current.users[trimmed].color : pickColor(current.users);
-      await saveBoard({ ...current, users: { ...current.users, [trimmed]: { color } } });
-      setSavedName(selectedProject.id, trimmed); // 2번: 이 브라우저·이 프로젝트에 내 이름 기억
-      setName(trimmed);
-    },
-    [selectedProject, loadBoard, saveBoard]
-  );
+  // 프로젝트를 열면(목록 클릭이든 공유 링크든) 로그인된 구글 이름으로 자동 등록한다.
+  // 이미 이 프로�트에 등록돼 있으면(재방문) 아무것도 안 하고 건너뛴다.
+  const joinBoard = useCallback(async () => {
+    if (!name || !selectedProject) return;
+    await loadBoard();
+    const current = boardRef.current;
+    if (current.users[name]) return; // 이미 등록됨(색상 유지)
+    const color = pickColor(current.users);
+    await saveBoard({ ...current, users: { ...current.users, [name]: { color } } });
+  }, [name, selectedProject, loadBoard, saveBoard]);
 
-  const joinBoard = () => doJoin(nameInput);
-
-  // 2번: 같은 브라우저에서 참여한 적 있는 프로젝트면 이름 화면을 건너뛰고 바로 입장
   useEffect(() => {
-    if (selectedProject && !name) {
-      const saved = getSavedName(selectedProject.id);
-      if (saved) doJoin(saved);
-    }
-    // name을 의존성에 넣지 않는다: 자동 입장 후 재실행/루프 방지
+    joinBoard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProject]);
-
-  // 2번: 다른 이름으로 다시 참여하고 싶을 때 -> 기억된 이름을 지우고 이름 화면으로
-  const changeName = () => {
-    if (selectedProject) clearSavedName(selectedProject.id);
-    setName(null);
-    setNameInput("");
-    setMergeMode(false);
-    setSelected([]);
-  };
+  }, [name, selectedProject?.id]);
 
   const myColor = name && board.users[name] ? board.users[name].color : PALETTE[0];
 
@@ -914,10 +1302,65 @@ export default function FacilitationBoard() {
     });
   };
 
+  // STEP 안내 배너는 오너 전용 편집 필드라 board(kv_store)가 아니라 projects 테이블에 저장한다.
+  // 서버 쪽 강제는 projects 테이블의 trg_protect_owner_only_project_fields 트리거가 한다.
   const updateInstructions = async (text) => {
+    if (!selectedProject || !isOwner) return;
+    const { error } = await supabase.from("projects").update({ instructions: text }).eq("id", selectedProject.id);
+    if (error) {
+      console.error("STEP 안내 배너 수정 실패(오너만 가능)", error);
+      return;
+    }
+    setSelectedProject((prev) => (prev ? { ...prev, instructions: text } : prev));
+  };
+
+  // ===== 회고(KPT) 핸들러 =====
+  // 본인 칸 텍스트를 타이핑하는 동안은 로컬만 갱신(폴링이 지우지 않도록). 포스트잇 편집과 동일한 패턴.
+  const editRetroLocal = (owner, field, value) => {
+    setBoard((prev) => ({
+      ...prev,
+      retros: { ...prev.retros, [owner]: { ...(prev.retros?.[owner] || {}), [field]: value } },
+    }));
+  };
+  // blur 시 최신 원격 상태 위에 내 KPT 텍스트만 반영해 저장(done 등 다른 필드는 원격값 유지).
+  const commitRetro = async (owner) => {
+    const mine = boardRef.current.retros?.[owner] || {};
     await loadBoard();
     const current = boardRef.current;
-    await saveBoard({ ...current, instructions: text });
+    const existing = current.retros?.[owner] || {};
+    await saveBoard({
+      ...current,
+      retros: {
+        ...current.retros,
+        [owner]: { ...existing, keep: mine.keep || "", problem: mine.problem || "", try: mine.try || "" },
+      },
+    });
+  };
+  // 개인 단위 완료 토글. 완료해도 잠그지 않으며, 완료된 사람 KPT만 문서에 누적된다.
+  const toggleRetroDone = async (owner) => {
+    await loadBoard();
+    const current = boardRef.current;
+    const existing = current.retros?.[owner] || {};
+    await saveBoard({ ...current, retros: { ...current.retros, [owner]: { ...existing, done: !existing.done } } });
+  };
+  // 우선순위 문제별 해결여부 선택 (누구나 변경 가능)
+  const setPriorityResolution = async (noteId, value) => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, priorityResolution: { ...current.priorityResolution, [noteId]: value } });
+  };
+  // 회고 탭 상단 "우선순위 해결여부" 섹션 표시 토글 (누구나 켜고 끌 수 있음)
+  const toggleRetroPriorityCheck = async () => {
+    await loadBoard();
+    const current = boardRef.current;
+    const on = current.retroPriorityCheck !== false;
+    await saveBoard({ ...current, retroPriorityCheck: !on });
+  };
+  // 문서 표준 필드(목적/배경/추진 방향/기대 효과) 저장. 안내 문구 편집과 동일 패턴(blur 시 저장).
+  const updateDocField = async (field, value) => {
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, docFields: { ...(current.docFields || {}), [field]: value } });
   };
 
   // 포스트잇 내용을 타이핑하는 동안은 로컬 상태만 갱신 (폴링에 의해 지워지지 않도록)
@@ -1001,6 +1444,8 @@ export default function FacilitationBoard() {
 
   // 6번: "문제로" 토글. 노트 자체에 isProblem을 표시(복제 없음). 해제 시 그 노트의 표는 정리.
   // 문제와 보류는 동시에 될 수 없으므로, 문제로 표시하면 보류 상태는 자동으로 해제한다.
+  // problemMarkedAt: "문제로 표시된 시점" — 우선순위 결과/문제 정리 탭의 동점 2차 정렬 기준으로 쓰인다.
+  // 해제할 때 비워서, 나중에 다시 문제로 표시하면 그 순간을 새 기준 시점으로 삼는다.
   const toggleProblem = async (noteId) => {
     await loadBoard();
     const current = boardRef.current;
@@ -1011,7 +1456,9 @@ export default function FacilitationBoard() {
     await saveBoard({
       ...current,
       notes: current.notes.map((n) =>
-        n.id === noteId ? { ...n, isProblem: willBeProblem, isParked: willBeProblem ? false : n.isParked } : n
+        n.id === noteId
+          ? { ...n, isProblem: willBeProblem, isParked: willBeProblem ? false : n.isParked, problemMarkedAt: willBeProblem ? Date.now() : undefined }
+          : n
       ),
       votes,
     });
@@ -1069,21 +1516,241 @@ export default function FacilitationBoard() {
     await saveBoard({ ...current, votes: { ...current.votes, [noteId]: nextVoters } });
   };
 
+  // 1인당 투표권도 STEP 안내 배너와 같은 이유로 projects 테이블 컬럼(votes_per_user)에 저장한다.
   const setVotesPerUser = async (n) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, votesPerUser: n });
+    if (!selectedProject || !isOwner) return;
+    const { error } = await supabase.from("projects").update({ votes_per_user: n }).eq("id", selectedProject.id);
+    if (error) {
+      console.error("투표권 수 변경 실패(오너만 가능)", error);
+      return;
+    }
+    setSelectedProject((prev) => (prev ? { ...prev, votesPerUser: n } : prev));
   };
 
-  // 시안(Onalign.dc.html)의 녹음 토글. 실제 오디오 녹음은 하지 않고, "녹음 중" 상태만
-  // 보드에 공유해서 참여자 누구나 켤 수 있고 모두의 화면 상단에 배지로 보이게 한다(시각 표시 전용).
-  const toggleRecording = async () => {
+  // 브라우저의 SpeechRecognition 생성자 (크롬/엣지 등은 webkit 접두어 사용)
+  const getSpeechRecognition = () =>
+    typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
+
+  // 마이크 음성 인식 시작. Web Speech API는 오직 마이크 입력만 인식한다
+  // (탭/시스템 오디오는 이 API로 직접 캡처 불가). 온라인 회의라도 스피커로 나오는 소리를
+  // 마이크가 음향적으로 함께 주워 담아 텍스트화된다.
+  const startRecognition = () => {
+    const SR = getSpeechRecognition();
+    if (!SR) {
+      setSpeechSupported(false);
+      return;
+    }
+    const recognition = new SR();
+    recognition.lang = "ko-KR";
+    recognition.continuous = true; // 말이 잠깐 끊겨도 계속 듣는다
+    recognition.interimResults = true; // 확정 전 임시 결과도 실시간으로 보여준다
+
+    recognition.onresult = (event) => {
+      let finalChunk = "";
+      let interimChunk = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) finalChunk += res[0].transcript;
+        else interimChunk += res[0].transcript;
+      }
+      // 확정 문장은 회의록 버퍼에 누적한다. 문장 사이에 공백을 넣어 붙는 것을 막는다.
+      if (finalChunk) {
+        const next = (minutesRef.current ? minutesRef.current + " " : "") + finalChunk.trim();
+        minutesRef.current = next;
+        setMinutes(next);
+      }
+      setMinutesInterim(interimChunk);
+    };
+
+    recognition.onerror = (event) => {
+      // no-speech / aborted 등은 흔한 일이므로 조용히 넘어가고, 권한 거부만 사용자에게 알린다
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        wantRecordingRef.current = false;
+        setMicRecording(false);
+        setConfirmState({
+          title: "마이크 권한 필요",
+          message: "브라우저에서 마이크 사용이 차단되어 있습니다. 주소창의 자물쇠 아이콘에서 마이크를 허용해 주세요.",
+          confirmLabel: "확인",
+          onConfirm: () => setConfirmState(null),
+        });
+      }
+    };
+
+    // continuous라도 브라우저가 일정 시간 후 자동 종료할 수 있다.
+    // 사용자가 여전히 "녹음 중"을 원하면 자동으로 다시 시작해 끊김 없이 이어 듣는다.
+    recognition.onend = () => {
+      // 모드 전환으로 교체된 옛 인스턴스는 재시작·상태변경에 관여하지 않는다(두 인식기 동시 실행 방지).
+      if (recognitionRef.current !== recognition) return;
+      if (wantRecordingRef.current) {
+        try {
+          recognition.start();
+        } catch (e) {
+          /* 이미 시작된 경우 등은 무시 */
+        }
+      } else {
+        setMicRecording(false);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
+      setMicRecording(true);
+    } catch (e) {
+      /* 중복 start 예외 무시 */
+    }
+  };
+
+  const stopRecognition = () => {
+    wantRecordingRef.current = false;
+    const recognition = recognitionRef.current;
+    if (recognition) {
+      try {
+        recognition.stop();
+      } catch (e) {
+        /* noop */
+      }
+    }
+    setMicRecording(false);
+    setMinutesInterim("");
+  };
+
+  // 회의록 녹음 토글. board.recording은 참여자 모두에게 보이는 공유 "녹음 중" 배지이고,
+  // 실제 음성 인식은 버튼을 누른 이 브라우저에서만 로컬로 동작한다.
+  const toggleRecord = async () => {
+    const SR = getSpeechRecognition();
+    if (!SR) {
+      setSpeechSupported(false);
+      setConfirmState({
+        title: "지원하지 않는 브라우저",
+        message: "이 브라우저는 음성 인식(Web Speech API)을 지원하지 않습니다. Chrome 또는 Edge에서 이용해 주세요.",
+        confirmLabel: "확인",
+        onConfirm: () => setConfirmState(null),
+      });
+      return;
+    }
+
+    // 저장이 끝나기 전에 "서버 값 동기화" effect가 옛 board.minutes로 minutesRef를 덮어쓰지 않도록
+    // stopRecognition()의 setMicRecording(false)보다 먼저 잠금을 건다 (아래 effect 참고).
+    minutesSyncSuspendRef.current = true;
+    if (micRecording) {
+      stopRecognition();
+    } else {
+      wantRecordingRef.current = true;
+      startRecognition();
+    }
+    setMinutesOpen(true); // 결과 확인·저장용 패널을 확실히 보여준다
+
+    // 공유 배지 갱신 + 누적 녹취록을 board에 저장해 문서/다른 참여자에 반영
+    const nowRecording = !micRecording;
     await loadBoard();
     const current = boardRef.current;
-    await saveBoard({ ...current, recording: !current.recording });
+    await saveBoard({ ...current, recording: nowRecording, minutes: minutesRef.current });
+    minutesSyncSuspendRef.current = false;
   };
+
+  // ===== 회의록(minutes) 액션 =====
+  const copyMinutes = async () => {
+    try {
+      await navigator.clipboard.writeText(minutesRef.current.trim());
+    } catch (e) {
+      /* 클립보드 권한 없을 때 조용히 무시 */
+    }
+  };
+
+  // 전체 회의 녹취록을 .txt 파일로 다운로드
+  const downloadMinutes = () => {
+    const text = minutesRef.current.trim();
+    if (!text) return;
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${selectedProject?.title || "회의록"}-회의록.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // 회의록 내용 지우기(문서에도 반영되도록 board.minutes까지 비운다)
+  const clearMinutes = async () => {
+    minutesRef.current = "";
+    setMinutes("");
+    setMinutesInterim("");
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, minutes: "" });
+  };
+
+  // 회의록 단순 정리(외부 API 없이 클라이언트에서만): 반복된 문장과 붙어서 중복된 단어를 걷어낸다.
+  // ※ 요약/핵심 추출이 아니라 "잡음성 중복 제거" 수준이다. 결과는 문서 "회의 녹취록"에 그대로 반영된다.
+  const cleanupMinutes = async () => {
+    const raw = minutesRef.current || "";
+    if (!raw.trim()) return;
+    // 1) 문장 단위로 나눈다(문장부호/줄바꿈 기준). 부호가 없으면 통째로 한 덩어리가 된다.
+    const segments = raw
+      .split(/(?<=[.!?。？！])\s+|\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const seen = new Set();
+    const out = [];
+    for (let seg of segments) {
+      // 2) 붙어서 반복된 동일 단어 축약: "그 그 그 안건" -> "그 안건"
+      //    (\b는 한글에 안 먹으므로, 반복 토큰 뒤가 공백/끝인지 lookahead로 확인)
+      seg = seg.replace(/(\S+)(?:\s+\1(?=\s|$))+/g, "$1").replace(/\s{2,}/g, " ").trim();
+      // 3) 공백·문장부호를 무시한 정규화 기준으로 중복 문장 제거(첫 등장 순서 유지)
+      const norm = seg.replace(/[\s.,!?。、·]/g, "").toLowerCase();
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      out.push(seg);
+    }
+    const cleaned = out.join("\n");
+    if (cleaned === raw) return; // 바뀐 게 없으면 저장 생략
+    minutesRef.current = cleaned;
+    setMinutes(cleaned);
+    await loadBoard();
+    const current = boardRef.current;
+    await saveBoard({ ...current, minutes: cleaned });
+  };
+
+  // 회의록 녹음 중이 아닐 때는 board.minutes(공유 저장본)를 로컬 버퍼에 동기화한다.
+  // 이렇게 하면 새로고침·재접속 후에도 회의록 패널과 "이어서 녹음"이 이어진다.
+  // (녹음 중에는 로컬이 실시간으로 자라므로 덮어쓰지 않는다.)
+  useEffect(() => {
+    if (micRecording) return; // 녹음 중에는 로컬 버퍼가 실시간으로 자라므로 덮어쓰지 않는다
+    if (minutesSyncSuspendRef.current) return; // 정지 저장(load+save)이 끝나기 전에는 덮어쓰지 않는다
+    const bm = board.minutes || "";
+    if (bm !== minutesRef.current) {
+      minutesRef.current = bm;
+      setMinutes(bm);
+    }
+  }, [board.minutes, micRecording]);
+
+  // 컴포넌트 언마운트 시 인식이 계속 돌지 않도록 정리
+  useEffect(() => {
+    return () => {
+      wantRecordingRef.current = false;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          /* noop */
+        }
+      }
+    };
+  }, []);
 
   // "이미지로 저장": 현재 보고 있는 탭에 실제로 렌더링된 화면 전체(스크롤 영역 포함)를 그대로 캡처한다
+  // 작업 화면 헤더의 "링크 복사" — 목록 화면의 링크 복사와 동일한 형식(?p=id)
+  const copyBoardLink = async () => {
+    if (!selectedProject) return;
+    const url = `${window.location.origin}${window.location.pathname}?p=${selectedProject.id}`;
+    await navigator.clipboard.writeText(url);
+    setBoardLinkCopied(true);
+    setTimeout(() => setBoardLinkCopied(false), 1800);
+  };
+
   const downloadPhaseImage = async () => {
     const node = phaseContentRef.current;
     if (!node) return;
@@ -1105,16 +1772,21 @@ export default function FacilitationBoard() {
     link.click();
   };
 
-  // 4번(문서): 표 중심 문서를 HTML 파일로 내려받기. docType으로 "과정" 문서와 "결과"(TOP 5) 문서를 구분한다.
-  const downloadDoc = (type) => {
-    const html = buildDocHtml(selectedProject, board, type);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.html`;
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+  // 4번(문서): 표 중심 문서를 Word(.docx) 파일로 내려받기. docType으로 "과정" 문서와 "결과"(TOP 5) 문서를 구분한다.
+  const downloadDoc = async (type) => {
+    setDocxDownloading(true);
+    try {
+      const doc = buildDocDocx(selectedProject, board, type);
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.download = `${selectedProject.title}-${type === "result" ? "결과" : "과정"}문서.docx`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDocxDownloading(false);
+    }
   };
 
   // 4번(문서): 표 중심 문서를 마크다운 파일로 내려받기 (노션·구글독스 등에 붙여넣기 좋음)
@@ -1129,11 +1801,128 @@ export default function FacilitationBoard() {
     URL.revokeObjectURL(url);
   };
 
-  // ---- 화면 1: 프로젝트 목록 / 생성 ----
-  if (!selectedProject) {
+  // 4번(문서): 문서 표준 4필드 + (과정: 의견·문제 / 결과: 우선순위·해결여부) + 회의 녹취록을 하나의 지시문으로 합쳐
+  // 클립보드에 복사한다. ChatGPT·Claude·Gemini 등 외부 AI 채팅창에 바로 붙여넣어 정리된 문서를 받는 용도.
+  const buildDocPrompt = (type) => {
+    const { docFields, notesByTopic, problemNotes, topRanked, resolutionRows, priorityCheckOn, minutes } = buildDocModel(selectedProject, board);
+    const v = (s) => (s && s.trim() ? s.trim() : "(입력 없음)");
+
+    const parts = [
+      "다음은 회의에서 나온 자료입니다. 이 내용을 바탕으로 목적, 배경, 추진 방향, 기대 효과가 명확히 드러나는 정리된 문서를 작성해줘. 각 항목은 결론부터 먼저 쓰고(두괄식) 뒷받침 내용을 풀어 설명하는 대신 핵심만 짧게 나열하는 개조식으로 정리해줘.",
+      "",
+      "## 문서 표준 정보",
+      `- 목적: ${v(docFields.purpose)}`,
+      `- 배경: ${v(docFields.background)}`,
+      `- 추진 방향: ${v(docFields.direction)}`,
+      `- 기대 효과: ${v(docFields.expected)}`,
+    ];
+
+    if (type === "result") {
+      parts.push("", "## 우선순위 결과");
+      if (topRanked.length) {
+        topRanked.forEach((p, i) => {
+          parts.push(`${i + 1}. ${p.text}${p.description ? ` (설명: ${p.description})` : ""} — ${p.votes}표`);
+        });
+      } else {
+        parts.push("(우선순위로 정리된 문제 없음)");
+      }
+      if (priorityCheckOn && resolutionRows.length) {
+        parts.push("", "## 해결여부");
+        resolutionRows.forEach((r) => {
+          parts.push(`- ${r.text}: ${RESOLUTION_LABELS[r.resolution] || "미정"}`);
+        });
+      }
+    } else {
+      parts.push("", "## 의견 모음");
+      if (board.notes.length) {
+        notesByTopic.forEach((t) => {
+          t.notes.forEach((n) => {
+            parts.push(`- [${t.title}] ${n.text || "(빈 포스트잇)"}${n.isProblem ? " (문제로 표시됨)" : ""}`);
+          });
+        });
+      } else {
+        parts.push("(작성된 의견 없음)");
+      }
+      parts.push("", "## 문제 정리");
+      if (problemNotes.length) {
+        problemNotes.forEach((n, i) => {
+          parts.push(`${i + 1}. ${n.text}${n.description ? ` — ${n.description}` : ""}`);
+        });
+      } else {
+        parts.push("(문제로 표시된 의견 없음)");
+      }
+    }
+
+    if (minutes.trim()) {
+      parts.push("", "## 회의 녹취록", minutes.trim());
+    }
+
+    return parts.join("\n");
+  };
+  const copyDocPrompt = async (type) => {
+    const text = buildDocPrompt(type);
+    await navigator.clipboard.writeText(text);
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 1800);
+  };
+
+  // ---- 최상단 로그인 게이트: selectedProject가 어떤 경로(목록 클릭/공유 링크)로 설정됐든
+  // 로그인 전에는 절대 보드로 들어갈 수 없다("팀원도 로그인 필수, 익명 참여 폐지"). ----
+  // 로그인 여부 확인이 끝나기 전에는 로그인/목록 화면이 잠깐 깜빡이지 않도록 대기
+  if (authLoading) {
     return (
       <div>
         <TopBar onProjects={backToProjects} />
+        <div style={{ textAlign: "center", padding: "80px 24px", color: "#a19c95", fontSize: 14 }}>불러오는 중...</div>
+      </div>
+    );
+  }
+  if (!user) {
+    return (
+      <div>
+        <TopBar onProjects={backToProjects} />
+        <div style={{ minHeight: "70vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ textAlign: "center", maxWidth: 380 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>
+              {sharedProjectId ? "회의에 참여하기" : "내 프로젝트"}
+            </h1>
+            <p style={{ fontSize: 14.5, color: "#8a857f", margin: "0 0 24px", lineHeight: 1.6 }}>
+              {sharedProjectId
+                ? "이 회의에 참여하려면 구글 계정으로 로그인해주세요."
+                : "구글 계정으로 로그인하면 내가 만든 프로젝트를 모아 관리할 수 있어요."}
+            </p>
+            <button
+              onClick={signInWithGoogle}
+              style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#242322", color: "#fff", border: "none", borderRadius: 11, padding: "13px 22px", fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+            >
+              <svg width="18" height="18" viewBox="0 0 48 48">
+                <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.9 32.6 29.4 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.4-.4-3.5z"/>
+                <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 15.9 18.9 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4 24 4c-7.5 0-14 4.2-17.7 10.7z"/>
+                <path fill="#4CAF50" d="M24 44c5.5 0 10.4-1.9 14.2-5.1l-6.6-5.4C29.6 35.4 26.9 36 24 36c-5.4 0-9.9-3.4-11.3-8.1l-6.5 5C9.9 39.7 16.4 44 24 44z"/>
+                <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-1 3-3.2 5.4-6 6.9l6.6 5.4C39.5 37.3 44 31.5 44 24c0-1.2-.1-2.4-.4-3.5z"/>
+              </svg>
+              Google로 계속하기
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- 화면 1: 프로젝트 목록 / 생성 (이 아래부터는 항상 로그인된 상태) ----
+  if (!selectedProject) {
+    // 공유 링크(?p=id)로 들어왔는데 아직 그 프로젝트를 못 찾은 상태(조회 중이거나 존재하지 않는 id)
+    if (sharedProjectId) {
+      return (
+        <div>
+          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+          <div style={{ textAlign: "center", padding: "80px 24px", color: "#a19c95", fontSize: 14 }}>프로젝트를 불러오는 중입니다...</div>
+        </div>
+      );
+    }
+    return (
+      <div>
+        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
         <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 24px 80px" }}>
           <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-.03em", margin: "0 0 7px" }}>내 프로젝트</h1>
           <div style={{ fontSize: 15, color: "#8a857f", marginBottom: 28 }}>
@@ -1220,6 +2009,19 @@ export default function FacilitationBoard() {
                     열기
                   </button>
                   <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const url = `${window.location.origin}${window.location.pathname}?p=${p.id}`;
+                      await navigator.clipboard.writeText(url);
+                      setCopiedLinkId(p.id);
+                      setTimeout(() => setCopiedLinkId((cur) => (cur === p.id ? null : cur)), 1800);
+                    }}
+                    title="팀원과 공유할 링크 복사 (로그인 없이 이 프로젝트로 바로 들어옵니다)"
+                    style={{ background: copiedLinkId === p.id ? "#e6f7f1" : "#ffffff", border: `1px solid ${copiedLinkId === p.id ? "#a9e6d3" : "rgba(36,35,34,.1)"}`, borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: copiedLinkId === p.id ? "#1e7a4d" : "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                  >
+                    {copiedLinkId === p.id ? "✓ 복사됨" : "링크 복사"}
+                  </button>
+                  <button
                     onClick={(e) => {
                       e.stopPropagation();
                       setConfirmState({
@@ -1257,56 +2059,22 @@ export default function FacilitationBoard() {
     );
   }
 
-  // ---- 화면 2: 참여자 이름 입력 ----
-  if (!name) {
-    return (
-      <div>
-        <TopBar onProjects={backToProjects} />
-        <div style={{ minHeight: "70vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ width: "100%", maxWidth: 420, textAlign: "center" }}>
-            <div style={{ display: "inline-flex", gap: 4, marginBottom: 22 }}>
-              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#f7d3de" }} />
-              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#bcd9ee" }} />
-              <span style={{ width: 13, height: 13, borderRadius: 4, background: "#a9e6d3" }} />
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#8a857f", marginBottom: 8 }}>초대받은 프로젝트</div>
-            <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 30px" }}>{selectedProject.title}</h1>
-            <div style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 18, padding: 28, boxShadow: "0 2px 10px rgba(0,0,0,.05)" }}>
-              <input
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && joinBoard()}
-                placeholder="이름 또는 닉네임"
-                style={{ width: "100%", border: "1px solid rgba(36,35,34,.14)", borderRadius: 11, padding: "14px 16px", fontSize: 16, outline: "none", textAlign: "center", marginBottom: 14, boxSizing: "border-box" }}
-              />
-              <button
-                onClick={joinBoard}
-                style={{ width: "100%", background: "#242322", color: "#fff", border: "none", borderRadius: 11, padding: 15, fontWeight: 700, fontSize: 16, cursor: "pointer" }}
-              >
-                참여하기
-              </button>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center", marginTop: 16, fontSize: 13, color: "#8a857f" }}>
-                <span style={{ display: "flex", gap: 3 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#f7d3de" }} />
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#dde3ba" }} />
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#d6c9ee" }} />
-                </span>
-                이름을 입력하면 색상이 자동으로 배정됩니다
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // (예전 "화면 2: 참여자 이름 입력"은 폐지 — 팀원도 로그인이 필수가 되면서, 참여 신원이
+  // 자동으로 구글 계정 표시 이름이 되어 이름을 따로 입력받을 필요가 없어졌다. 보드 등록은
+  // 아래 useEffect의 자동 참여 로직이 대신한다.)
 
-  const votesLeft = board.votesPerUser - myVoteCount(board);
+  // 로그인한 사용자가 이 프로젝트의 오너인지. STEP 안내 배너 편집·1인당 투표권 조정은 오너만 가능
+  // (실제 강제는 projects 테이블의 트리거가 하고, 이건 그에 맞춘 UI 숨김/비활성화용).
+  const isOwner = !!(user && selectedProject && selectedProject.ownerId === user.id);
+  const votesLeft = selectedProject.votesPerUser - myVoteCount(board);
   const problemNotesAll = board.notes.filter((n) => n.isProblem);
   const parkedNotesAll = board.notes.filter((n) => n.isParked); // 보류함: 모든 의견 보드를 통틀어 보류된 항목
-  const rankedProblems = [...problemNotesAll].sort(
-    (a, b) => (board.votes[b.id]?.length || 0) - (board.votes[a.id]?.length || 0)
-  );
+  // 우선순위 결과 탭: 득표순, 동점이면 문제로 표시된 시점이 빠른 순 (buildDocModel의 결과 문서 TOP 목록과 동일 기준)
+  const rankedProblems = sortProblemsByVotesEarliestFirst(problemNotesAll, board.votes);
+  // 문제 정리 탭: 득표순, 동점이면 문제로 표시된 시점이 최근인 순 (buildDocModel의 과정 문서 문제 정리 표와 동일 기준)
+  const problemNotesSorted = sortProblemsByVotesMostRecentFirst(problemNotesAll, board.votes);
   const docModel = buildDocModel(selectedProject, board);
+  const minutesRecording = micRecording; // 녹음은 회의록 한 종류뿐
 
   // 포스트잇 카드 렌더 (문제 그룹/일반 그룹에서 공통 사용)
   const renderNoteCard = (note) => {
@@ -1401,7 +2169,7 @@ export default function FacilitationBoard() {
             autoFocus={justCreatedId === note.id}
             value={note.text}
             placeholder="자유롭게 적어보세요"
-            ref={(el) => autoResizeTextarea(el)}
+            ref={autoSizeRef}
             onChange={(e) => {
               editNoteTextLocal(note.id, e.target.value);
               autoResizeTextarea(e.target);
@@ -1433,8 +2201,8 @@ export default function FacilitationBoard() {
           />
         )}
 
-        {/* 하단: 작성자(좌) + 상태/투표(우) */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 10 }}>
+        {/* 하단: 작성자(좌) + 상태/투표(우) — 글자 수와 무관하게 카드 맨 아래에 고정 */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: "auto", paddingTop: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(36,35,34,.55)" }}>{note.authors.join(", ")}</span>
           {!mergeMode && (
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -1460,7 +2228,7 @@ export default function FacilitationBoard() {
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {iVoted ? "✓" : "👍"} {voters.length > 0 ? voters.length : ""}
+                  {iVoted ? "✓ 투표" : "투표"} {voters.length > 0 ? voters.length : ""}
                 </button>
               )}
               <button
@@ -1516,7 +2284,14 @@ export default function FacilitationBoard() {
     <div>
       <TopBar
         onProjects={backToProjects}
+        onCopyLink={copyBoardLink}
+        linkCopied={boardLinkCopied}
         onSaveImage={downloadPhaseImage}
+        onMinutes={() => setMinutesOpen(true)}
+        minutesRecording={minutesRecording}
+        user={user}
+        onSignOut={signOut}
+        dotColor={myColor.bg}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {/* 시안의 "녹음 중" 배지 (시각 표시 전용) */}
@@ -1526,18 +2301,6 @@ export default function FacilitationBoard() {
                 녹음 중
               </span>
             )}
-            <span
-              style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#f2f2f2", borderRadius: 999, padding: "5px 12px 5px 8px", fontSize: 13, fontWeight: 600, color: "#242322" }}
-            >
-              <span style={{ width: 15, height: 15, borderRadius: 999, background: myColor.bg, flexShrink: 0 }} />
-              {name}
-            </span>
-            <button
-              onClick={changeName}
-              style={{ border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#6f6b66", borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-            >
-              다른 이름으로 참여
-            </button>
           </div>
         }
       />
@@ -1561,6 +2324,7 @@ export default function FacilitationBoard() {
             { key: "opinion", label: "의견 작성" },
             { key: "problem", label: "문제 정리" },
             { key: "voting", label: "우선순위 결과" },
+            { key: "retro", label: "회고" },
             { key: "document", label: "문서" },
           ].map((tab) => {
             const on = board.phase === tab.key;
@@ -1596,15 +2360,18 @@ export default function FacilitationBoard() {
                 STEP 1<br />·<br />의견 작성
               </div>
               <textarea
-                defaultValue={board.instructions}
-                ref={(el) => autoResizeTextarea(el)}
+                key={selectedProject.instructions}
+                defaultValue={selectedProject.instructions}
+                readOnly={!isOwner}
+                title={isOwner ? "" : "이 안내 문구는 프로젝트 오너만 수정할 수 있어요"}
+                ref={autoSizeRef}
                 onInput={(e) => autoResizeTextarea(e.target)}
                 onFocus={() => {
                   suspendPollRef.current = true;
                 }}
                 onBlur={(e) => {
                   suspendPollRef.current = false;
-                  updateInstructions(e.target.value);
+                  if (isOwner) updateInstructions(e.target.value);
                 }}
                 style={{
                   flex: 1,
@@ -1613,6 +2380,7 @@ export default function FacilitationBoard() {
                   outline: "none",
                   resize: "none",
                   overflow: "hidden",
+                  cursor: isOwner ? "text" : "default",
                   color: "#e7e4df",
                   fontSize: 14.5,
                   lineHeight: 1.6,
@@ -1628,7 +2396,13 @@ export default function FacilitationBoard() {
                 <input
                   key={selectedProject.goal}
                   defaultValue={selectedProject.goal}
-                  onBlur={(e) => updateProjectGoal(e.target.value.trim() || selectedProject.goal)}
+                  onFocus={() => {
+                    suspendPollRef.current = true;
+                  }}
+                  onBlur={(e) => {
+                    suspendPollRef.current = false;
+                    updateProjectGoal(e.target.value.trim() || selectedProject.goal);
+                  }}
                   style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontWeight: 500, color: "#57534e", minWidth: 0, fontSize: 14.5 }}
                 />
               </div>
@@ -1651,30 +2425,9 @@ export default function FacilitationBoard() {
             {/* 툴바: 투표 안내(좌) + 보드 추가/병합 모드(우) */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <div data-guide="vote-status" style={{ fontSize: 13, color: "#8a857f" }}>
-                투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {board.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
+                투표: 남은 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b> / {selectedProject.votesPerUser}표 · <span style={{ color: "#B52B1B", fontWeight: 700 }}>문제</span>로 표시된 포스트잇에 투표할 수 있어요
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {/* 시안의 녹음 토글 (시각 표시 전용 — 실제 오디오 녹음은 하지 않음) */}
-                <button
-                  onClick={toggleRecording}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 7,
-                    padding: "8px 14px",
-                    borderRadius: 9,
-                    border: `1px solid ${board.recording ? "#ffcaca" : "rgba(36,35,34,.14)"}`,
-                    background: board.recording ? "#fdeaea" : "#fff",
-                    color: board.recording ? "#d32f2f" : "#242322",
-                    cursor: "pointer",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: board.recording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
-                  {board.recording ? "녹음 중지" : "녹음 시작"}
-                </button>
                 <button
                   data-guide="merge"
                   onClick={() => {
@@ -1797,9 +2550,17 @@ export default function FacilitationBoard() {
                           </div>
                         </div>
                       )}
-                      {/* 5번: 일반 포스트잇은 flex-wrap으로 좌->우 채우고 줄바꿈 (가로 스크롤 없음) */}
+                      {/* 5번: 일반 포스트잇은 flex-wrap으로 좌->우 채우고 줄바꿈 (가로 스크롤 없음).
+                          포스트잇 옆 빈 공간(카드가 없는 gap 영역)을 클릭해도 새 포스트잇이 생기게 한다.
+                          e.target === e.currentTarget로 카드 자체 클릭과 구분(카드를 눌렀을 때는 무시).
+                          병합 모드에서는 카드를 골라 합치는 중이므로 빈 공간 클릭으로 새 포스트잇을 만들지 않는다. */}
                       {plainNotes.length > 0 && (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                        <div
+                          onClick={(e) => {
+                            if (!mergeMode && e.target === e.currentTarget) createBlankNote(topic.id);
+                          }}
+                          style={{ display: "flex", flexWrap: "wrap", gap: 12, minHeight: 30, cursor: mergeMode ? "default" : "pointer" }}
+                        >
                           <AnimatePresence mode="popLayout">{plainNotes.map(renderNoteCard)}</AnimatePresence>
                         </div>
                       )}
@@ -1813,7 +2574,22 @@ export default function FacilitationBoard() {
                         </div>
                       )}
                       {topicNotes.length === 0 && (
-                        <div style={{ color: "#a19c95", fontSize: 13, padding: 6 }}>아직 포스트잇이 없습니다. "+ 포스트잇"을 눌러 시작하세요.</div>
+                        <button
+                          onClick={() => createBlankNote(topic.id)}
+                          style={{
+                            width: "100%",
+                            background: "none",
+                            border: "1.5px dashed rgba(36,35,34,.18)",
+                            borderRadius: 12,
+                            padding: 16,
+                            fontSize: 13,
+                            color: "#a19c95",
+                            cursor: "pointer",
+                            textAlign: "center",
+                          }}
+                        >
+                          아직 포스트잇이 없습니다. 클릭해서 시작하세요.
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1934,7 +2710,7 @@ export default function FacilitationBoard() {
                           <span style={{ fontSize: 12, color: "#a19c95", flexShrink: 0, marginTop: 6 }}>이유 :</span>
                           <textarea
                             value={n.description || ""}
-                            ref={(el) => autoResizeTextarea(el)}
+                            ref={autoSizeRef}
                             onChange={(e) => {
                               editNoteDescriptionLocal(n.id, e.target.value);
                               autoResizeTextarea(e.target);
@@ -1965,7 +2741,7 @@ export default function FacilitationBoard() {
         {board.phase === "problem" && (
           <motion.div key="problem" {...fadeSlide}>
             {/* STEP 2 배너 */}
-            <div data-guide="problem-area" style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#bcd9ee", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
                 STEP 2<br />·<br />문제 정리
               </div>
@@ -1980,8 +2756,8 @@ export default function FacilitationBoard() {
                 <br />의견 작성 탭에서 "문제로"를 눌러 추가하세요.
               </div>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {problemNotesAll.map((n, i) => {
+            <div {...(problemNotesAll.length > 0 && { "data-guide": "problem-area" })} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {problemNotesSorted.map((n, i) => {
                 const topicTitle = board.topics.find((t) => t.id === n.topicId)?.title || "";
                 return (
                   <div key={n.id} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 14, padding: "18px 20px", boxShadow: "0 1px 3px rgba(0,0,0,.04)", display: "flex", gap: 16 }}>
@@ -2003,7 +2779,7 @@ export default function FacilitationBoard() {
                       </div>
                       <textarea
                         value={n.text}
-                        ref={(el) => autoResizeTextarea(el)}
+                        ref={autoSizeRef}
                         onChange={(e) => {
                           editNoteTextLocal(n.id, e.target.value);
                           autoResizeTextarea(e.target);
@@ -2020,7 +2796,7 @@ export default function FacilitationBoard() {
                       />
                       <textarea
                         value={n.description || ""}
-                        ref={(el) => autoResizeTextarea(el)}
+                        ref={autoSizeRef}
                         onChange={(e) => {
                           editNoteDescriptionLocal(n.id, e.target.value);
                           autoResizeTextarea(e.target);
@@ -2045,29 +2821,36 @@ export default function FacilitationBoard() {
 
         {board.phase === "voting" && (
           <motion.div key="voting" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 16 }}>
               <div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 4px" }}>우선순위 결과</h2>
                 <p style={{ fontSize: 13.5, color: "#8a857f", margin: 0 }}>
-                  득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표 · 투표는 "의견 작성" 탭에서
+                  득표순 정렬 · 내 남은 투표권 <b style={{ color: "#4f3fd6" }}>{Math.max(0, votesLeft)}</b>표
                 </p>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
-                <button
-                  onClick={() => setVotesPerUser(Math.max(1, board.votesPerUser - 1))}
-                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                >
-                  −
-                </button>
-                <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{board.votesPerUser}</span>
-                <button
-                  onClick={() => setVotesPerUser(Math.min(10, board.votesPerUser + 1))}
-                  style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
-                >
-                  +
-                </button>
-              </div>
+              {/* 1인당 투표권 조정: 오너만 +/- 컨트롤이 보이고, 팀원에게는 조정 UI 자체를 숨긴 채 값만 안내한다 */}
+              {isOwner ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#57534e" }}>1인당 투표권</span>
+                  <button
+                    onClick={() => setVotesPerUser(Math.max(1, selectedProject.votesPerUser - 1))}
+                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                  >
+                    −
+                  </button>
+                  <span style={{ fontWeight: 800, fontSize: 15, minWidth: 16, textAlign: "center" }}>{selectedProject.votesPerUser}</span>
+                  <button
+                    onClick={() => setVotesPerUser(Math.min(10, selectedProject.votesPerUser + 1))}
+                    style={{ width: 26, height: 26, borderRadius: 7, border: "1px solid rgba(36,35,34,.14)", background: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", lineHeight: 1, color: "#242322" }}
+                  >
+                    +
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#57534e", background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 10, padding: "8px 12px" }}>
+                  1인당 투표권 {selectedProject.votesPerUser}표
+                </div>
+              )}
             </div>
             {rankedProblems.length === 0 && (
               <div style={{ textAlign: "center", padding: "60px 20px", color: "#a19c95", fontSize: 14 }}>
@@ -2081,6 +2864,14 @@ export default function FacilitationBoard() {
                   {rankedProblems.map((p, i) => {
                     const voters = board.votes[p.id] || [];
                     const first = i === 0 && voters.length > 0;
+                    // 디자인(Onalign.dc.html) 반영: 카드마다 투표 토글 버튼.
+                    // 투표함 -> 어두운색(취소 가능), 투표 안 함 & 투표권 남음 -> 보라색, 투표권 소진 -> 비활성 회색.
+                    const iVoted = voters.includes(name);
+                    const canVote = votesLeft > 0;
+                    const voteDisabled = !iVoted && !canVote;
+                    const voteBtnBg = iVoted ? "#242322" : canVote ? "#5b4dde" : "#f0ede8";
+                    const voteBtnFg = iVoted ? "#fff" : canVote ? "#fff" : "#b0aba4";
+                    const voteBtnBorder = iVoted ? "#242322" : canVote ? "#5b4dde" : "rgba(36,35,34,.08)";
                     return (
                       <div
                         key={p.id}
@@ -2115,6 +2906,25 @@ export default function FacilitationBoard() {
                             <span style={{ fontSize: 12.5, color: "#8a857f", fontWeight: 600 }}>{voters.length}표</span>
                           </div>
                         </div>
+                        <button
+                          onClick={() => toggleVote(p.id)}
+                          disabled={voteDisabled}
+                          title={voteDisabled ? "투표권을 모두 사용했습니다" : iVoted ? "투표 취소" : "투표"}
+                          style={{
+                            background: voteBtnBg,
+                            color: voteBtnFg,
+                            border: `1px solid ${voteBtnBorder}`,
+                            borderRadius: 9,
+                            padding: "9px 15px",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: voteDisabled ? "not-allowed" : "pointer",
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {iVoted ? "투표 취소" : "투표"}
+                        </button>
                       </div>
                     );
                   })}
@@ -2124,11 +2934,162 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
 
+        {board.phase === "retro" && (
+          <motion.div key="retro" {...fadeSlide}>
+            {/* STEP 5 배너 */}
+            <div style={{ background: "#242322", borderRadius: 16, padding: "18px 22px", marginBottom: 20, display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".05em", color: "#d6c9ee", whiteSpace: "nowrap", paddingTop: 2, textAlign: "center", flexShrink: 0 }}>
+                STEP 5<br />·<br />회고
+              </div>
+              <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#e7e4df" }}>
+                각자 <b style={{ color: "#fff" }}>Keep · Problem · Try</b>를 적고 "완료"를 눌러 주세요. 완료한 사람의 회고만 문서에 반영됩니다.
+                <br />완료 후에도 자유롭게 수정할 수 있고, 수정하면 문서에도 자동으로 갱신됩니다.
+              </p>
+            </div>
+
+            {/* 우선순위 해결여부 점검 토글 (누구나 켜고 끌 수 있음, 기본 ON) */}
+            <div data-guide="retro-priority" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 12, padding: "14px 18px", marginBottom: 16, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>우선순위 해결여부 점검</div>
+                <div style={{ fontSize: 13, color: "#8a857f", marginTop: 2 }}>우선순위 결과에서 정한 문제들이 이번에 해결됐는지 함께 확인합니다.</div>
+              </div>
+              <button
+                onClick={toggleRetroPriorityCheck}
+                role="switch"
+                aria-checked={board.retroPriorityCheck !== false}
+                title="우선순위 해결여부 섹션 표시/숨김"
+                style={{
+                  width: 46,
+                  height: 26,
+                  borderRadius: 999,
+                  border: "none",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  background: board.retroPriorityCheck !== false ? "#5b4dde" : "#d5d1cb",
+                  position: "relative",
+                  padding: 0,
+                }}
+              >
+                <span style={{ position: "absolute", top: 3, left: board.retroPriorityCheck !== false ? 23 : 3, width: 20, height: 20, borderRadius: 999, background: "#fff", transition: "left .15s ease", boxShadow: "0 1px 3px rgba(0,0,0,.25)" }} />
+              </button>
+            </div>
+
+            {/* 우선순위 해결여부 목록 (ON일 때만, KPT 칸 위쪽) */}
+            {board.retroPriorityCheck !== false && (
+              <div style={{ marginBottom: 22 }}>
+                {rankedProblems.length === 0 ? (
+                  <div style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 12, padding: "16px 18px", color: "#a19c95", fontSize: 13.5 }}>
+                    우선순위로 정리된 문제가 없습니다. "문제 정리 → 우선순위 결과"에서 먼저 진행하세요.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {rankedProblems.map((p, i) => {
+                      const cur = board.priorityResolution?.[p.id] || "";
+                      return (
+                        <div key={p.id} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.09)", borderRadius: 12, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 15, fontWeight: 800, color: "#bcbcbc", width: 22, flexShrink: 0, textAlign: "center" }}>{i + 1}</span>
+                          <span style={{ flex: 1, minWidth: 140, fontSize: 14.5, fontWeight: 600 }}>{p.text}</span>
+                          <div style={{ display: "inline-flex", background: "#f2f0ec", borderRadius: 9, padding: 3, gap: 2, flexShrink: 0 }}>
+                            {[
+                              ["resolved", "해결됨", "#1e7a4d"],
+                              ["partial", "부분해결", "#9a6a15"],
+                              ["unresolved", "미해결", "#c0392b"],
+                            ].map(([val, label, activeColor]) => {
+                              const on = cur === val;
+                              return (
+                                <button
+                                  key={val}
+                                  onClick={() => setPriorityResolution(p.id, val)}
+                                  style={{
+                                    border: "none",
+                                    borderRadius: 7,
+                                    padding: "6px 12px",
+                                    fontSize: 12.5,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                    background: on ? "#fff" : "transparent",
+                                    color: on ? activeColor : "#8a857f",
+                                    boxShadow: on ? "0 1px 2px rgba(0,0,0,.12)" : "none",
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 참여자별 KPT 입력 칸 (참여자 수만큼, 본인 칸만 편집 가능) */}
+            <div data-guide="retro-kpt" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+              {Object.entries(board.users).length === 0 ? (
+                <div style={{ color: "#a19c95", fontSize: 14 }}>참여자가 없습니다.</div>
+              ) : (
+                Object.entries(board.users).map(([owner, u]) => {
+                  const mineCell = owner === name;
+                  const r = board.retros?.[owner] || {};
+                  const done = !!r.done;
+                  const col = u.color || PALETTE[0];
+                  const kptField = (field, label, placeholder) => (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#8a857f", marginBottom: 4 }}>{label}</div>
+                      <textarea
+                        value={r[field] || ""}
+                        readOnly={!mineCell}
+                        ref={autoSizeRef}
+                        onInput={(e) => autoResizeTextarea(e.target)}
+                        onChange={mineCell ? (e) => { editRetroLocal(owner, field, e.target.value); autoResizeTextarea(e.target); } : undefined}
+                        onFocus={mineCell ? () => { suspendPollRef.current = true; } : undefined}
+                        onBlur={mineCell ? () => { suspendPollRef.current = false; commitRetro(owner); } : undefined}
+                        placeholder={mineCell ? placeholder : "—"}
+                        style={{ width: "100%", boxSizing: "border-box", border: "1px solid rgba(36,35,34,.12)", borderRadius: 8, padding: "8px 10px", resize: "none", overflow: "hidden", fontSize: 13.5, fontFamily: "inherit", lineHeight: 1.5, outline: "none", minHeight: 34, background: mineCell ? "#fff" : "#faf9f7", color: "#242322" }}
+                      />
+                    </div>
+                  );
+                  return (
+                    <div key={owner} style={{ background: "#fff", border: `1px solid ${done ? "rgba(114,201,172,.6)" : "rgba(36,35,34,.09)"}`, borderRadius: 14, padding: "16px 18px", boxShadow: "0 1px 3px rgba(0,0,0,.04)", display: "flex", flexDirection: "column" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                        <span style={{ width: 15, height: 15, borderRadius: 999, background: col.bg, flexShrink: 0 }} />
+                        <span style={{ fontSize: 14.5, fontWeight: 700 }}>{owner}</span>
+                        {mineCell && <span style={{ fontSize: 11, color: "#8a857f" }}>(나)</span>}
+                        {done && (
+                          <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4, background: "#e6f7f1", color: "#1e7a4d", border: "1px solid #a9e6d3", borderRadius: 999, padding: "3px 9px", fontSize: 11.5, fontWeight: 700 }}>
+                            ✓ 완료
+                          </span>
+                        )}
+                      </div>
+                      {kptField("keep", "Keep — 잘된 점", "계속 유지하고 싶은 점")}
+                      {kptField("problem", "Problem — 아쉬운 점", "문제였던 점")}
+                      {kptField("try", "Try — 시도할 점", "다음에 시도해볼 점")}
+                      {mineCell && (
+                        <button
+                          onClick={() => toggleRetroDone(owner)}
+                          style={{ marginTop: 4, alignSelf: "flex-end", padding: "8px 16px", borderRadius: 8, border: done ? "1px solid rgba(36,35,34,.14)" : "none", background: done ? "#fff" : "#242322", color: done ? "#242322" : "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}
+                        >
+                          {done ? "완료 취소" : "완료"}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+
         {board.phase === "document" && (
           <motion.div key="document" {...fadeSlide}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+            {/* 토글(과정/결과)과 다운로드 버튼 그룹을 좌우로 나란히 두지 않고 항상 세로로 쌓는다.
+                좌우 배치는 좁은 화면에서 토글이 혼자 줄바꿈되어 어색해 보이는 문제가 있어,
+                각 그룹이 항상 전체 너비를 쓰도록 고정한다. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
               {/* 세그먼트 토글 (과정 / 결과) */}
-              <div style={{ display: "inline-flex", borderRadius: 11, padding: 4, background: "#eeeeee" }}>
+              <div style={{ display: "inline-flex", alignSelf: "flex-start", borderRadius: 11, padding: 4, background: "#eeeeee" }}>
                 <button
                   data-guide="doc-type-process"
                   onClick={() => setDocType("process")}
@@ -2164,28 +3125,47 @@ export default function FacilitationBoard() {
                   결과 문서
                 </button>
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  onClick={downloadDocImage}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  이미지로 저장
-                </button>
-                <button
-                  onClick={() => downloadDoc(docType)}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  HTML로 다운로드
-                </button>
-                <button
-                  onClick={() => downloadDocMarkdown(docType)}
-                  style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
-                >
-                  마크다운으로 다운로드
-                </button>
+              <div>
+                {/* 버튼 4개를 2개씩 짝지어, 화면이 좁아 줄바꿈될 때 낱개가 아니라 짝(그룹) 단위로 줄바꿈되게 한다.
+                    "프롬프트 추출" 혼자 다음 줄에 덜렁 남는 걸 막기 위해 "마크다운으로 다운로드"와 한 그룹으로 묶는다. */}
+                <div data-guide="doc-download" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button
+                      onClick={downloadDocImage}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "none", background: "#353433", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      이미지로 저장
+                    </button>
+                    <button
+                      onClick={() => downloadDoc(docType)}
+                      disabled={docxDownloading}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: docxDownloading ? "wait" : "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", opacity: docxDownloading ? 0.6 : 1 }}
+                    >
+                      {docxDownloading ? "생성 중..." : "docx로 다운로드"}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button
+                      onClick={() => downloadDocMarkdown(docType)}
+                      style={{ padding: "9px 14px", borderRadius: 9, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      마크다운으로 다운로드
+                    </button>
+                    <button
+                      onClick={() => copyDocPrompt(docType)}
+                      title="회의 녹취록과 문서 내용을 하나의 프롬프트로 복사합니다"
+                      style={{ padding: "9px 14px", borderRadius: 9, border: `1px solid ${promptCopied ? "#a9e6d3" : "rgba(36,35,34,.14)"}`, background: promptCopied ? "#e6f7f1" : "#fff", color: promptCopied ? "#1e7a4d" : "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}
+                    >
+                      {promptCopied ? "✓ 복사됨" : "프롬프트 추출"}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#a19c95", marginTop: 8, textAlign: "left" }}>
+                  회의 녹취록과 문서 내용을 하나의 프롬프트로 만들어드립니다. 복사해서 ChatGPT·Claude·Gemini 등 사용하시는 AI에 붙여넣으면 정리된 문서를 받아볼 수 있습니다.
+                </div>
               </div>
             </div>
-            <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)", maxWidth: 860, margin: "0 auto" }}>
+            <div ref={docContentRef} style={{ background: "#fff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 16, padding: "34px 40px", boxShadow: "0 1px 3px rgba(0,0,0,.05)" }}>
             <div style={{ borderBottom: "2px solid #242322", paddingBottom: 14, marginBottom: 22 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#8a857f", letterSpacing: ".04em" }}>
                 {docType === "process" ? "과정 문서 · PROCESS" : "결과 문서 · RESULT"}
@@ -2196,9 +3176,43 @@ export default function FacilitationBoard() {
               </div>
             </div>
 
+            {/* 문서 표준 필드(목적/배경/추진 방향/기대 효과): 프로젝트당 1개, 과정/결과 공통, 인라인 편집 */}
+            <DocSection title="문서 표준 정보">
+              <DocTable>
+                <tbody>
+                  {[
+                    ["목적", "purpose"],
+                    ["배경", "background"],
+                    ["추진 방향", "direction"],
+                    ["기대 효과", "expected"],
+                  ].map(([label, key]) => (
+                    <tr key={key}>
+                      <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#f2f2f2", width: 120, whiteSpace: "nowrap", verticalAlign: "top" }}>{label}</th>
+                      <td style={{ border: "1px solid #e0e0e0", padding: "6px 12px", verticalAlign: "top" }}>
+                        <textarea
+                          defaultValue={board.docFields?.[key] || ""}
+                          ref={autoSizeRef}
+                          onInput={(e) => autoResizeTextarea(e.target)}
+                          onFocus={() => {
+                            suspendPollRef.current = true;
+                          }}
+                          onBlur={(e) => {
+                            suspendPollRef.current = false;
+                            updateDocField(key, e.target.value);
+                          }}
+                          placeholder={`${label}을(를) 입력하세요`}
+                          style={{ width: "100%", boxSizing: "border-box", border: "none", background: "transparent", resize: "none", overflow: "hidden", fontSize: 14, fontFamily: "inherit", lineHeight: 1.6, outline: "none", minHeight: 24 }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </DocTable>
+            </DocSection>
+
             {docType === "process" ? (
               <>
-                <DocSection title="1. 개요">
+                <DocSection title="개요">
                   <DocTable>
                     <tbody>
                       <DocKV k="프로젝트명" v={selectedProject.title} />
@@ -2209,7 +3223,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="2. 참여자">
+                <DocSection title="참여자">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2236,7 +3250,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="3. 의견 모음 (과정)">
+                <DocSection title="의견 모음 (과정)">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2268,7 +3282,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="4. 문제 정리 및 부가 설명">
+                <DocSection title="문제 정리 및 부가 설명">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2298,7 +3312,7 @@ export default function FacilitationBoard() {
               </>
             ) : (
               <>
-                <DocSection title="1. 개요">
+                <DocSection title="개요">
                   <DocTable>
                     <tbody>
                       <DocKV k="프로젝트명" v={selectedProject.title} />
@@ -2308,7 +3322,7 @@ export default function FacilitationBoard() {
                   </DocTable>
                 </DocSection>
 
-                <DocSection title="2. 우선순위 TOP 5 결과">
+                <DocSection title="우선순위 TOP 5 결과">
                   <DocTable>
                     <thead>
                       <tr>
@@ -2339,6 +3353,79 @@ export default function FacilitationBoard() {
                 </DocSection>
               </>
             )}
+
+            {/* 우선순위 해결여부 (회고 탭 토글 ON일 때만) — 기존 콘텐츠 뒤에 배치 */}
+            {docModel.priorityCheckOn && (
+              <DocSection title="우선순위 해결여부">
+                <DocTable>
+                  <thead>
+                    <tr>
+                      <DocTh>#</DocTh>
+                      <DocTh>문제</DocTh>
+                      <DocTh>득표</DocTh>
+                      <DocTh>해결여부</DocTh>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {docModel.resolutionRows.length ? (
+                      docModel.resolutionRows.map((r, i) => (
+                        <tr key={r.id}>
+                          <DocTd>{i + 1}</DocTd>
+                          <DocTd>{r.text}</DocTd>
+                          <DocTd>{r.votes}표</DocTd>
+                          <DocTd>{RESOLUTION_LABELS[r.resolution] || <span style={{ color: "#aaa" }}>미정</span>}</DocTd>
+                        </tr>
+                      ))
+                    ) : (
+                      <DocEmpty span={4}>우선순위로 정리된 문제가 없습니다.</DocEmpty>
+                    )}
+                  </tbody>
+                </DocTable>
+              </DocSection>
+            )}
+
+            {/* 회고(KPT) — 완료한 참여자만 누적 표시 */}
+            <DocSection title="회고 (KPT)">
+              {docModel.completedRetros.length ? (
+                docModel.completedRetros.map((r) => (
+                  <div key={r.name} style={{ marginBottom: 14 }}>
+                  <DocTable>
+                    <tbody>
+                      <tr>
+                        <th colSpan={2} style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#f2f2f2", fontWeight: 700 }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 999, background: r.color?.bg || "#ccc" }} />
+                            {r.name}
+                          </span>
+                        </th>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Keep</th>
+                        <DocTd>{r.keep && r.keep.trim() ? r.keep : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Problem</th>
+                        <DocTd>{r.problem && r.problem.trim() ? r.problem : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                      <tr>
+                        <th style={{ border: "1px solid #e0e0e0", padding: "9px 12px", textAlign: "left", background: "#fafafa", width: 90, whiteSpace: "nowrap", verticalAlign: "top" }}>Try</th>
+                        <DocTd>{r.try && r.try.trim() ? r.try : <span style={{ color: "#aaa" }}>—</span>}</DocTd>
+                      </tr>
+                    </tbody>
+                  </DocTable>
+                  </div>
+                ))
+              ) : (
+                <div style={{ color: "#aaa", fontSize: 14 }}>완료된 회고가 없습니다.</div>
+              )}
+            </DocSection>
+
+            {/* 회의 녹취록 — 회의록 녹음 내용이 있을 때만 */}
+            {docModel.minutes && (
+              <DocSection title="회의 녹취록">
+                <div style={{ whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.7, color: "#242322" }}>{docModel.minutes}</div>
+              </DocSection>
+            )}
             </div>
           </motion.div>
         )}
@@ -2347,6 +3434,108 @@ export default function FacilitationBoard() {
       </div>
 
       <GuideCoach phase={board.phase} onGotoScreen={setPhase} />
+
+      {/* 회의록(minutes) 패널: 헤더 "회의록 녹음"으로 열린다. 전체 회의를 누적하고 .txt·문서로 내보낸다. */}
+      <AnimatePresence>
+        {minutesOpen && (
+          <motion.div
+            key="minutes-panel"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.22, ease: EASE }}
+            style={{
+              position: "fixed",
+              left: 20,
+              bottom: 20,
+              width: "min(440px, calc(100vw - 40px))",
+              maxHeight: "min(60vh, 520px)",
+              background: "#fff",
+              border: "1px solid rgba(36,35,34,.12)",
+              borderRadius: 16,
+              boxShadow: "0 12px 40px rgba(0,0,0,.22)",
+              zIndex: 200,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "14px 16px", borderBottom: "1px solid rgba(36,35,34,.08)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                {minutesRecording && <span style={{ width: 9, height: 9, borderRadius: 999, background: "#ff4242", animation: "oaRecPulse 1.1s ease-in-out infinite", flexShrink: 0 }} />}
+                <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: "nowrap" }}>
+                  {minutesRecording ? "회의록 녹음 중 · 실시간 변환" : "회의록"}
+                </span>
+              </div>
+              <button
+                onClick={() => setMinutesOpen(false)}
+                title="닫기"
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#a19c95", fontSize: 18, lineHeight: 1, padding: 4 }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ padding: "14px 16px", overflowY: "auto", flex: 1 }}>
+              {!minutes && !minutesInterim ? (
+                <div style={{ color: "#a19c95", fontSize: 13.5, lineHeight: 1.6 }}>
+                  {minutesRecording
+                    ? "말을 시작하면 여기에 회의 내용이 계속 쌓입니다. (온라인 회의라면 스피커 볼륨을 켜두세요)"
+                    : "전체 회의 녹취록입니다. '회의록 녹음'을 눌러 시작하세요. 멈추면 문서에 자동 반영됩니다."}
+                </div>
+              ) : (
+                <div style={{ fontSize: 14, lineHeight: 1.7, whiteSpace: "pre-wrap", color: "#242322" }}>
+                  {minutes}
+                  {minutesInterim && <span style={{ color: "#a19c95" }}>{minutes ? " " : ""}{minutesInterim}</span>}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(36,35,34,.08)", background: "#faf9f7" }}>
+              <div style={{ width: "100%", fontSize: 12, lineHeight: 1.5, color: "#a19c95" }}>
+                녹음을 멈추면 전체 회의록이 문서 탭의 "회의 녹취록"에 자동 반영됩니다. "중복 정리"는 반복된 문장·단어만 걷어냅니다(요약 아님).
+              </div>
+              <button
+                onClick={toggleRecord}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: `1px solid ${minutesRecording ? "#ffcaca" : "rgba(36,35,34,.14)"}`, background: minutesRecording ? "#fdeaea" : "#fff", color: minutesRecording ? "#d32f2f" : "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+              >
+                <span style={{ width: 8, height: 8, borderRadius: 999, background: "#ff4242", animation: minutesRecording ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+                {minutesRecording ? "녹음 중지" : minutes ? "이어서 녹음" : "회의록 녹음"}
+              </button>
+              <button
+                onClick={cleanupMinutes}
+                disabled={!minutes || minutesRecording}
+                title="반복된 문장·단어를 제거합니다(요약은 아님)"
+                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: minutes && !minutesRecording ? "#242322" : "#c4bfb8", cursor: minutes && !minutesRecording ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                중복 정리
+              </button>
+              <button
+                onClick={copyMinutes}
+                disabled={!minutes}
+                style={{ padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: minutes ? "#242322" : "#c4bfb8", cursor: minutes ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                복사
+              </button>
+              <button
+                onClick={downloadMinutes}
+                disabled={!minutes}
+                style={{ padding: "8px 13px", borderRadius: 8, border: "none", background: minutes ? "#242322" : "#f0ede8", color: minutes ? "#fff" : "#c4bfb8", cursor: minutes ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                .txt 다운로드
+              </button>
+              <button
+                onClick={clearMinutes}
+                disabled={!minutes || minutesRecording}
+                style={{ marginLeft: "auto", padding: "8px 13px", borderRadius: 8, border: "none", background: "none", color: minutes && !minutesRecording ? "#a19c95" : "#d5d1cb", cursor: minutes && !minutesRecording ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 600 }}
+              >
+                내용 지우기
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <ConfirmDialog
         open={!!confirmState}
         title={confirmState?.title}

@@ -31,9 +31,11 @@ export function useAuth() {
   }, []);
 
   const signInWithGoogle = useCallback(() => {
+    // 공유 링크(?p=id)로 들어온 뒤 로그인하는 경우 이 쿼리스트링이 없으면 로그인 후
+    // 목록/생성 화면으로 떨어져버린다 — OAuth 왕복 후에도 원래 있던 프로젝트로 돌아오게 유지한다.
     return supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: `${window.location.origin}/app.html` },
+      options: { redirectTo: `${window.location.origin}/app.html${window.location.search}` },
     });
   }, []);
 

@@ -65,7 +65,12 @@ function fromDbProject(row) {
 // (익명/수동 이름 입력 폐지), 별도 로컬 저장이나 이름 화면 없이 이 값 하나로 참여자를 구분한다.
 function displayNameOf(user) {
   if (!user) return null;
-  return user.user_metadata?.full_name || user.user_metadata?.name || user.email || "참여자";
+  const raw = user.user_metadata?.full_name || user.user_metadata?.name || user.email || "참여자";
+  // 구글 프로필 이름에 "본명(닉네임)"처럼 괄호가 들어있으면 포스트잇 작성자 배지 등에 그대로
+  // 노출돼 "이름(닉네임)"이 카드마다 반복 표시되며 지저분해 보인다 — 괄호 안쪽은 잘라내고
+  // 바깥쪽 이름만 쓴다(괄호만 있고 바깥이 비면 원래 이름을 그대로 둔다).
+  const outsideParens = raw.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+  return outsideParens || raw;
 }
 
 const DEFAULT_INSTRUCTIONS =
@@ -2348,7 +2353,10 @@ export default function FacilitationBoard() {
           })}
         </div>
 
-        <div ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
+        {/* layout: 탭 전환 시 나가는 화면(absolute)과 들어오는 화면(relative)의 높이가 다르면
+            컨테이너 높이가 한 프레임에 뚝 바뀌면서 아래 스크롤이 같이 튕기던 문제가 있었다.
+            framer-motion의 layout 애니메이션으로 높이 변화 자체도 부드럽게 트윈되게 한다. */}
+        <motion.div layout transition={{ duration: 0.32, ease: EASE }} ref={phaseContentRef} style={{ position: "relative", background: "#ffffff" }}>
         <AnimatePresence initial={false}>
         {activeTab === "opinion" && (
           <motion.div key="opinion" {...fadeSlide}>
@@ -3428,7 +3436,7 @@ export default function FacilitationBoard() {
           </motion.div>
         )}
         </AnimatePresence>
-        </div>
+        </motion.div>
       </div>
 
       <GuideCoach phase={activeTab} onGotoScreen={setActiveTab} />

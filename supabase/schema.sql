@@ -168,3 +168,9 @@ set instructions = (b.value::jsonb ->> 'instructions'),
 from public.kv_store b
 where b.key = 'facilitation-board:' || p.id
   and p.instructions is null;
+
+-- ============================================================
+-- 온보딩 가이드 투어: "세션당 1회"(sessionStorage)에서 "계정당 1회, 30일 이상 재접속
+-- 시 다시 1회"로 변경하면서 이 시점을 계정(profiles)에 저장해야 해서 컬럼을 추가한다.
+-- ============================================================
+alter table public.profiles add column if not exists last_guide_seen_at timestamptz;

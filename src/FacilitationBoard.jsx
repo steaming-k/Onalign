@@ -597,8 +597,8 @@ function buildDocDocx(project, board, docType = "process") {
   });
 }
 
-// ===== 2번 관련: 작업 흐름 안내 투어 (세션당 1회) =====
-const GUIDE_SESSION_KEY = "onalign-guide-done";
+// ===== 2번 관련: 작업 흐름 안내 투어 (계정당 1회, 30일 이상 재접속 시 다시 1회) =====
+const GUIDE_REPEAT_MS = 30 * 24 * 60 * 60 * 1000;
 
 // 프로젝트/이름 화면은 제외. 작업 흐름만 순서대로 연이어 안내한다.
 const TOUR_STEPS = [
@@ -615,17 +615,24 @@ const TOUR_STEPS = [
   { target: "doc-download", screen: "document", text: "완성된 문서를 이미지·docx·마크다운으로 저장하거나, 프롬프트로 추출해 AI에게 정리를 맡기세요" },
 ];
 
-function guideDoneThisSession() {
-  try {
-    return !!sessionStorage.getItem(GUIDE_SESSION_KEY);
-  } catch (e) {
-    return false;
-  }
-}
+function GuideCoach({ phase, onGotoScreen, user }) {
+  // 계정당 1회: profiles.last_guide_seen_at을 확인하기 전까지는(비동기) 일단 안 띄운 상태로 시작해서,
+  // "떴다가 바로 사라지는" 깜빡임을 막는다. 확인 결과 30일 이상 지났거나 기록이 없으면 그때 0으로 올려 시작한다.
+  const [step, setStep] = useState(-1);
 
-function GuideCoach({ phase, onGotoScreen }) {
-  // 세션당 1회: 이번 세션에 이미 봤으면 -1(비활성)로 시작
-  const [step, setStep] = useState(() => (guideDoneThisSession() ? -1 : 0));
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from("profiles").select("last_guide_seen_at").eq("id", user.id).maybeSingle();
+      if (cancelled) return;
+      const lastSeen = data?.last_guide_seen_at ? new Date(data.last_guide_seen_at).getTime() : 0;
+      if (Date.now() - lastSeen > GUIDE_REPEAT_MS) setStep(0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
   const [rect, setRect] = useState(null);
   // 말풍선 실측 크기(화면이 좁아 텍스트가 더 꺾이면 높이가 달라짐) - 화면 밖으로 나가지 않도록 클램프할 때 사용
   const bubbleRef = useRef(null);
@@ -701,10 +708,14 @@ function GuideCoach({ phase, onGotoScreen }) {
   }, [step, rect]);
 
   const endTour = () => {
-    try {
-      sessionStorage.setItem(GUIDE_SESSION_KEY, "1");
-    } catch (e) {
-      /* noop */
+    if (user) {
+      supabase
+        .from("profiles")
+        .update({ last_guide_seen_at: new Date().toISOString() })
+        .eq("id", user.id)
+        .then(({ error }) => {
+          if (error) console.error("가이드 확인 시각 저장 실패", error);
+        });
     }
     setStep(-1);
     onGotoScreen("opinion"); // 안내가 끝나면 작업 시작 지점으로 되돌림
@@ -3443,7 +3454,7 @@ export default function FacilitationBoard() {
         </div>
       </div>
 
-      <GuideCoach phase={activeTab} onGotoScreen={setActiveTab} />
+      <GuideCoach phase={activeTab} onGotoScreen={setActiveTab} user={user} />
 
       {/* 회의록(minutes) 패널: 헤더 "회의록 녹음"으로 열린다. 전체 회의를 누적하고 .txt·문서로 내보낸다. */}
       <AnimatePresence>

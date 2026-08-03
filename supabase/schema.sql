@@ -102,6 +102,7 @@ create policy "projects public update" on public.projects
 -- 삭제는 오너 전용이다(4단계 제안 확정). owner_id가 아직 없는(귀속 전) 프로젝트는
 -- 특정 오너가 없으니 누구나 지울 수 있게 둔다(로그인 없이 만든 프로젝트가 영영 안 지워지는 것 방지).
 drop policy if exists "projects public delete" on public.projects;
+drop policy if exists "projects owner or unclaimed delete" on public.projects;
 create policy "projects owner or unclaimed delete" on public.projects
   for delete using (owner_id is null or owner_id = auth.uid());
 

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>개인정보처리방침 — Onalign</title>
+  <meta name="description" content="Onalign이 수집하는 개인정보 항목과 이용·보관·위탁에 관한 처리방침입니다." />
+  <link rel="canonical" href="https://onalign.vercel.app/privacy.html" />
+  <link rel="icon" href="/onalign-logo.png" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+  <style>
+    /* 랜딩(index.html)과 같은 색·폰트·여백 토큰을 그대로 쓴다. 본문은 긴 글이라 읽기 편한 폭으로 좁힌다. */
+    :root {
+      --ink: #242322; --ink-soft: #57534e; --muted: #8a857f; --faint: #a19c95;
+      --line: rgba(36,35,34,.08); --paper: #f6f4f0; --teal: #a9e6d3; --purple: #d6c9ee;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: var(--purple); }
+    a { color: inherit; text-decoration: none; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+    /* header — 랜딩과 동일한 구성. 긴 문서라 스크롤해도 따라오도록 sticky로 둔다 */
+    .hd { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); height: 70px; display: flex; align-items: center; }
+    .hd .wrap { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+    .hd img { height: 40px; width: auto; display: block; flex-shrink: 0; }
+    .hd-cta { background: var(--ink); color: #fff; border-radius: 10px; padding: 10px 18px; font-weight: 600; font-size: 14px; }
+    .hd-cta:hover { background: #3a3836; }
+
+    /* document body */
+    .doc { max-width: 760px; margin: 0 auto; padding: 40px 24px 72px; }
+    .back { display: inline-block; font-size: 14px; color: var(--muted); font-weight: 600; margin-bottom: 26px; }
+    .back:hover { color: var(--ink); }
+    .doc h1 { font-size: clamp(26px, 4vw, 33px); font-weight: 800; letter-spacing: -.03em; line-height: 1.35; margin-bottom: 12px; }
+    .eff { font-size: 14.5px; color: var(--ink-soft); margin-bottom: 22px; }
+    .note { background: var(--paper); border-left: 3px solid var(--teal); border-radius: 0 10px 10px 0; padding: 15px 18px; font-size: 14px; color: var(--ink-soft); line-height: 1.7; margin-bottom: 34px; }
+    .doc h2 { font-size: 19px; font-weight: 700; letter-spacing: -.02em; margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    .doc p { font-size: 15px; line-height: 1.75; color: var(--ink-soft); margin-bottom: 12px; }
+    .doc ol, .doc ul { margin: 0 0 12px 0; padding-left: 22px; }
+    .doc li { font-size: 15px; line-height: 1.75; color: var(--ink-soft); margin-bottom: 7px; }
+    .doc strong { color: var(--ink); font-weight: 700; }
+    .doc hr { border: none; border-top: 1px solid var(--line); margin: 36px 0 20px; }
+    .disclaimer { font-size: 13px; color: var(--faint); font-style: italic; line-height: 1.7; }
+
+    /* 표: 좁은 화면에서 넘칠 수 있으므로 표만 가로 스크롤되게 감싼다(본문은 안 흔들림) */
+    .table-scroll { overflow-x: auto; margin: 6px 0 16px; }
+    .doc table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 480px; }
+    .doc th, .doc td { border: 1px solid #e0e0e0; padding: 10px 12px; text-align: left; vertical-align: top; line-height: 1.65; }
+    .doc th { background: #f2f2f2; font-weight: 700; color: var(--ink); }
+    .doc td { color: var(--ink-soft); }
+    .highlight { background: var(--paper); border-radius: 10px; padding: 15px 18px; margin: 6px 0 16px; }
+    .highlight p { margin: 0; }
+
+    /* footer — 랜딩과 동일 */
+    .ft { border-top: 1px solid var(--line); padding: 28px 0 40px; }
+    .ft .wrap { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .ft-links { display: flex; gap: 20px; flex-wrap: wrap; }
+    .ft-links a { font-size: 13.5px; color: var(--ink-soft); font-weight: 500; }
+    .ft-links a:hover { color: var(--ink); text-decoration: underline; }
+    .ft-copy { font-size: 13px; color: var(--faint); }
+  </style>
+</head>
+<body>
+
+  <header class="hd">
+    <div class="wrap">
+      <a href="/"><img src="/onalign-logo.png" alt="Onalign" /></a>
+      <a href="/app.html" class="hd-cta">프로젝트 시작하기</a>
+    </div>
+  </header>
+
+  <main class="doc">
+    <a href="/" class="back">← 홈으로</a>
+
+    <h1>Onalign 개인정보처리방침</h1>
+    <p class="eff"><strong>시행일자: 2026년 8월 3일</strong></p>
+
+    <blockquote class="note">
+      이 방침은 개인/소규모 프로젝트로 운영되는 Onalign 서비스에 맞춘 표준 초안입니다. 정식 법률 자문을 거친 문서는 아니며, 서비스 확장 시 전문가 검토를 권장합니다.
+    </blockquote>
+
+    <p>Onalign(이하 "서비스")은 이용자의 개인정보를 소중히 다루며, 아래와 같이 개인정보를 처리합니다.</p>
+
+    <h2>1. 수집하는 개인정보 항목</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>구분</th>
+            <th>수집 항목</th>
+            <th>수집 방법</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>프로젝트 생성자(로그인 이용자)</td>
+            <td>구글 계정의 이름, 이메일 주소, 프로필 사진(제공되는 경우)</td>
+            <td>구글 OAuth 로그인</td>
+          </tr>
+          <tr>
+            <td>프로젝트 참여자</td>
+            <td>구글 계정의 이름, 이메일 주소</td>
+            <td>공유 링크를 통한 구글 OAuth 로그인</td>
+          </tr>
+          <tr>
+            <td>서비스 이용 콘텐츠</td>
+            <td>이용자가 직접 작성한 의견(포스트잇), 투표 내역, 회고 내용, 프로젝트 목표·안내 문구, 회의 녹취록(텍스트)</td>
+            <td>서비스 이용 과정에서 직접 입력</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="highlight">
+      <p><strong>회의 녹음 기능에 대한 특별 안내</strong>: 녹음 기능 사용 시 음성 데이터는 이용자의 브라우저 내에서 텍스트로 즉시 변환되며, <strong>음성 파일 자체는 서버로 전송되거나 저장되지 않습니다.</strong> 변환된 텍스트만 프로젝트 데이터로 저장됩니다.</p>
+    </div>
+
+    <h2>2. 개인정보의 수집 및 이용 목적</h2>
+    <ul>
+      <li>구글 계정 기반 로그인 및 이용자 식별</li>
+      <li>프로젝트 생성, 참여, 협업 기능 제공(의견 작성, 투표, 회고, 문서화 등)</li>
+      <li>서비스 오류 대응 및 개선</li>
+    </ul>
+
+    <h2>3. 개인정보의 보유 및 이용 기간</h2>
+    <ul>
+      <li>이용자가 계정을 삭제하거나 프로젝트를 삭제할 때까지 보유합니다.</li>
+      <li>관계 법령에 따라 별도 보존이 필요한 경우 해당 기간 동안 보관합니다.</li>
+    </ul>
+
+    <h2>4. 개인정보의 제3자 제공</h2>
+    <p>서비스는 원칙적으로 이용자의 개인정보를 외부에 제공하지 않습니다. 다만 아래의 경우는 예외로 합니다.</p>
+    <ul>
+      <li>이용자가 프로젝트 링크를 공유하여 다른 참여자가 콘텐츠를 열람하는 경우</li>
+      <li>법령에 근거하거나 수사기관의 요청이 있는 경우</li>
+    </ul>
+
+    <h2>5. 개인정보 처리 위탁</h2>
+    <p>서비스 운영을 위해 아래 업체에 개인정보 처리를 위탁하고 있습니다.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>수탁업체</th>
+            <th>위탁 업무</th>
+            <th>비고</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Google</td>
+            <td>계정 인증(OAuth 로그인)</td>
+            <td>구글의 개인정보처리방침이 별도 적용됨</td>
+          </tr>
+          <tr>
+            <td>Supabase</td>
+            <td>데이터베이스 저장 및 관리</td>
+            <td>해외 서버에 저장될 수 있음</td>
+          </tr>
+          <tr>
+            <td>Vercel</td>
+            <td>웹사이트 호스팅</td>
+            <td>해외 서버에 저장될 수 있음</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>6. 쿠키 및 로컬 저장소 사용</h2>
+    <p>서비스는 로그인 상태 유지, 프로젝트 재방문 시 편의 제공 등을 위해 브라우저의 로컬 저장소(localStorage)를 사용합니다. 이는 이용자의 기기에만 저장되며, 브라우저 설정에서 삭제할 수 있습니다.</p>
+
+    <h2>7. 이용자의 권리</h2>
+    <p>이용자는 언제든지 아래 권리를 행사할 수 있습니다.</p>
+    <ul>
+      <li>본인의 개인정보 열람, 정정, 삭제 요청</li>
+      <li>프로젝트 삭제를 통한 관련 콘텐츠 전체 삭제</li>
+      <li>계정 로그아웃 및 재로그인을 통한 이용 중단</li>
+    </ul>
+    <p>권리 행사는 아래 문의처를 통해 요청하실 수 있습니다.</p>
+
+    <h2>8. 개인정보 보호책임자 문의처</h2>
+    <ul>
+      <li>이메일: nanuda0519@gmail.com</li>
+    </ul>
+
+    <h2>9. 방침의 변경</h2>
+    <p>이 방침은 법령, 정책 또는 서비스 변경에 따라 수정될 수 있으며, 변경 시 서비스 내 공지사항을 통해 안내합니다.</p>
+
+    <hr />
+    <p class="disclaimer">이 문서는 초안이며, 정식 법률 자문을 거치지 않았습니다. 서비스가 확장되는 시점에는 전문가 검토를 권장합니다.</p>
+  </main>
+
+  <footer class="ft">
+    <div class="wrap">
+      <nav class="ft-links">
+        <a href="/">홈</a>
+        <a href="/terms.html">이용약관</a>
+        <a href="/privacy.html">개인정보처리방침</a>
+      </nav>
+      <div class="ft-copy">© 2026 Onalign</div>
+    </div>
+  </footer>
+
+</body>
+</html>

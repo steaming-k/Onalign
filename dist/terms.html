@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>이용약관 — Onalign</title>
+  <meta name="description" content="Onalign 서비스의 이용 조건을 정한 이용약관입니다." />
+  <link rel="canonical" href="https://onalign.vercel.app/terms.html" />
+  <link rel="icon" href="/onalign-logo.png" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+  <style>
+    /* 랜딩(index.html)과 같은 색·폰트·여백 토큰을 그대로 쓴다. 본문은 긴 글이라 읽기 편한 폭으로 좁힌다. */
+    :root {
+      --ink: #242322; --ink-soft: #57534e; --muted: #8a857f; --faint: #a19c95;
+      --line: rgba(36,35,34,.08); --paper: #f6f4f0; --teal: #a9e6d3; --purple: #d6c9ee;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: var(--purple); }
+    a { color: inherit; text-decoration: none; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+    /* header — 랜딩과 동일한 구성. 긴 문서라 스크롤해도 따라오도록 sticky로 둔다 */
+    .hd { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); height: 70px; display: flex; align-items: center; }
+    .hd .wrap { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+    .hd img { height: 40px; width: auto; display: block; flex-shrink: 0; }
+    .hd-cta { background: var(--ink); color: #fff; border-radius: 10px; padding: 10px 18px; font-weight: 600; font-size: 14px; }
+    .hd-cta:hover { background: #3a3836; }
+
+    /* document body */
+    .doc { max-width: 760px; margin: 0 auto; padding: 40px 24px 72px; }
+    .back { display: inline-block; font-size: 14px; color: var(--muted); font-weight: 600; margin-bottom: 26px; }
+    .back:hover { color: var(--ink); }
+    .doc h1 { font-size: clamp(26px, 4vw, 33px); font-weight: 800; letter-spacing: -.03em; line-height: 1.35; margin-bottom: 12px; }
+    .eff { font-size: 14.5px; color: var(--ink-soft); margin-bottom: 22px; }
+    .note { background: var(--paper); border-left: 3px solid var(--teal); border-radius: 0 10px 10px 0; padding: 15px 18px; font-size: 14px; color: var(--ink-soft); line-height: 1.7; margin-bottom: 34px; }
+    .doc h2 { font-size: 19px; font-weight: 700; letter-spacing: -.02em; margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+    .doc p { font-size: 15px; line-height: 1.75; color: var(--ink-soft); margin-bottom: 12px; }
+    .doc ol, .doc ul { margin: 0 0 12px 0; padding-left: 22px; }
+    .doc li { font-size: 15px; line-height: 1.75; color: var(--ink-soft); margin-bottom: 7px; }
+    .doc strong { color: var(--ink); font-weight: 700; }
+    .doc hr { border: none; border-top: 1px solid var(--line); margin: 36px 0 20px; }
+    .disclaimer { font-size: 13px; color: var(--faint); font-style: italic; line-height: 1.7; }
+
+    /* footer — 랜딩과 동일 */
+    .ft { border-top: 1px solid var(--line); padding: 28px 0 40px; }
+    .ft .wrap { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .ft-links { display: flex; gap: 20px; flex-wrap: wrap; }
+    .ft-links a { font-size: 13.5px; color: var(--ink-soft); font-weight: 500; }
+    .ft-links a:hover { color: var(--ink); text-decoration: underline; }
+    .ft-copy { font-size: 13px; color: var(--faint); }
+  </style>
+</head>
+<body>
+
+  <header class="hd">
+    <div class="wrap">
+      <a href="/"><img src="/onalign-logo.png" alt="Onalign" /></a>
+      <a href="/app.html" class="hd-cta">프로젝트 시작하기</a>
+    </div>
+  </header>
+
+  <main class="doc">
+    <a href="/" class="back">← 홈으로</a>
+
+    <h1>Onalign 이용약관</h1>
+    <p class="eff"><strong>시행일자: 2026년 8월 3일</strong></p>
+
+    <blockquote class="note">
+      이 약관은 개인/소규모 프로젝트로 운영되는 Onalign 서비스의 이용 조건을 정합니다. 정식 법률 자문을 거친 문서는 아니며, 서비스 확장 시 전문가 검토를 권장합니다.
+    </blockquote>
+
+    <h2>제1조 (목적)</h2>
+    <p>이 약관은 Onalign(이하 "서비스")의 이용과 관련하여 운영자와 이용자 간의 권리, 의무 및 책임사항을 규정함을 목적으로 합니다.</p>
+
+    <h2>제2조 (정의)</h2>
+    <ol>
+      <li>"서비스"란 Onalign이 제공하는 퍼실리테이션 도구 일체(의견 작성, 병합, 문제 정리, 우선순위 투표, 회고, 문서화, 회의 녹음 등)를 말합니다.</li>
+      <li>"이용자"란 이 약관에 따라 서비스를 이용하는 모든 사람을 말하며, 구글 계정으로 로그인한 "프로젝트 생성자"와 공유 링크로 참여하는 "참여자"를 포함합니다.</li>
+      <li>"콘텐츠"란 이용자가 서비스 내에서 작성한 포스트잇, 문제 정의, 투표 결과, 회고, 회의 녹취록, 문서 등 일체의 정보를 말합니다.</li>
+    </ol>
+
+    <h2>제3조 (약관의 효력 및 변경)</h2>
+    <ol>
+      <li>이 약관은 서비스 화면에 게시함으로써 효력이 발생합니다.</li>
+      <li>운영자는 필요한 경우 약관을 변경할 수 있으며, 변경된 약관은 서비스 내 공지 후 적용됩니다.</li>
+    </ol>
+
+    <h2>제4조 (서비스의 제공 및 변경)</h2>
+    <ol>
+      <li>서비스는 현재 개인/소규모 프로젝트 단계로 운영되며, 사전 통지 없이 기능이 추가, 변경, 중단될 수 있습니다.</li>
+      <li>운영자는 서비스의 안정적 제공을 위해 노력하나, 무중단·무결함을 보장하지 않습니다.</li>
+    </ol>
+
+    <h2>제5조 (이용자의 의무)</h2>
+    <p>이용자는 다음 각 호의 행위를 해서는 안 됩니다.</p>
+    <ol>
+      <li>타인의 계정을 도용하거나 부정하게 사용하는 행위</li>
+      <li>서비스를 통해 불법적인 정보를 게시하거나 타인의 권리를 침해하는 행위</li>
+      <li>서비스의 정상적인 운영을 방해하는 행위(과도한 트래픽 유발, 자동화된 접근 등)</li>
+    </ol>
+
+    <h2>제6조 (콘텐츠의 소유권)</h2>
+    <ol>
+      <li>이용자가 서비스 내에서 작성한 콘텐츠의 저작권은 해당 이용자에게 있습니다.</li>
+      <li>운영자는 서비스 제공(화면 표시, 저장, 문서 생성, 프로젝트 소유자와의 공유 등)에 필요한 범위 내에서만 콘텐츠를 사용합니다.</li>
+    </ol>
+
+    <h2>제7조 (회의 녹음 기능에 관한 특칙)</h2>
+    <ol>
+      <li>녹음 기능은 이용자(프로젝트 참여자)의 자발적 선택으로 사용됩니다.</li>
+      <li>녹음 시작 시 다른 참여자에게 녹음 중임을 알리는 표시가 제공되나, 실제 회의 참여자 전원의 동의 확보 책임은 녹음을 시작한 이용자 본인에게 있습니다.</li>
+      <li>녹음된 음성은 브라우저에서 텍스트로 변환되며, 음성 데이터 자체는 서버에 전송·저장되지 않습니다. 변환된 텍스트는 프로젝트 문서에 저장됩니다.</li>
+    </ol>
+
+    <h2>제8조 (면책 조항)</h2>
+    <ol>
+      <li>서비스는 현재 무료로 제공되며, 운영자는 서비스 이용으로 발생한 손해에 대해 법이 허용하는 최대 범위 내에서 책임을 지지 않습니다.</li>
+      <li>이용자 간 콘텐츠(회의 내용, 회고 등)로 인해 발생하는 분쟁에 대해 운영자는 관여하지 않습니다.</li>
+    </ol>
+
+    <h2>제9조 (분쟁 해결)</h2>
+    <p>이 약관과 관련하여 분쟁이 발생할 경우, 운영자와 이용자는 상호 협의하여 해결하도록 노력합니다.</p>
+
+    <h2>제10조 (문의처)</h2>
+    <p>서비스 이용 관련 문의는 nanuda0519@gmail.com 으로 연락 주시기 바랍니다.</p>
+
+    <hr />
+    <p class="disclaimer">이 문서는 초안이며, 정식 법률 자문을 거치지 않았습니다. 서비스가 확장되는 시점에는 전문가 검토를 권장합니다.</p>
+  </main>
+
+  <footer class="ft">
+    <div class="wrap">
+      <nav class="ft-links">
+        <a href="/">홈</a>
+        <a href="/terms.html">이용약관</a>
+        <a href="/privacy.html">개인정보처리방침</a>
+      </nav>
+      <div class="ft-copy">© 2026 Onalign</div>
+    </div>
+  </footer>
+
+</body>
+</html>

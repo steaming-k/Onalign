@@ -4,7 +4,24 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Onalign — 흩어진 의견을, 하나의 방향으로</title>
-  <meta name="description" content="의견 → 병합 → 문제 정리 → 우선순위 투표. 결론 없이 길어지는 회의와 말할 타이밍을 놓친 팀원을 위한 가벼운 퍼실리테이션 도구." />
+  <meta name="description" content="의견 작성부터 문제 정리, 우선순위 투표, 회고, 문서화까지 — 결론 없이 길어지는 회의를 위한 퍼실리테이션 도구." />
+  <link rel="canonical" href="https://onalign.vercel.app/" />
+  <link rel="icon" href="/onalign-logo.png" />
+
+  <!-- 공유 미리보기(카카오톡·슬랙·트위터 등). og:image는 반드시 절대 URL이어야 크롤러가 읽는다. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://onalign.vercel.app/" />
+  <meta property="og:site_name" content="Onalign" />
+  <meta property="og:locale" content="ko_KR" />
+  <meta property="og:title" content="Onalign — 흩어진 의견을, 하나의 방향으로" />
+  <meta property="og:description" content="의견 작성부터 문제 정리, 우선순위 투표, 회고, 문서화까지 — 결론 없이 길어지는 회의를 위한 퍼실리테이션 도구." />
+  <meta property="og:image" content="https://onalign.vercel.app/onalign-logo.png" />
+  <meta property="og:image:alt" content="Onalign 로고" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Onalign — 흩어진 의견을, 하나의 방향으로" />
+  <meta name="twitter:description" content="의견 작성부터 문제 정리, 우선순위 투표, 회고, 문서화까지 — 결론 없이 길어지는 회의를 위한 퍼실리테이션 도구." />
+  <meta name="twitter:image" content="https://onalign.vercel.app/onalign-logo.png" />
+
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
   <style>
     :root {
@@ -45,8 +62,6 @@
     .hero h1 { font-size: clamp(36px, 6vw, 53px); line-height: 1.3; letter-spacing: -.04em; font-weight: 800; margin: 0 0 22px; text-wrap: balance; color: #2e2d2c; }
     .hero .tagline { font-size: clamp(16px, 2.2vw, 19px); line-height: 1.6; color: var(--ink-soft); max-width: 620px; margin: 0 auto 34px; text-wrap: pretty; }
     .hero .free-note { font-size: 13px; color: var(--muted); margin-top: 30px; }
-    .sticky-cluster { margin-top: 56px; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
-    .snote { width: 150px; border-radius: 6px; padding: 16px; text-align: center; box-shadow: 0 3px 10px rgba(36,35,34,.08); font-size: 15.5px; line-height: 1.55; font-weight: 500; }
 
     section { }
     .sec-title { font-size: clamp(24px, 3.4vw, 30px); font-weight: 800; letter-spacing: -.03em; text-align: center; margin: 0 0 8px; }
@@ -108,6 +123,14 @@
     .cta-box .btn { display: inline-block; padding: 16px 32px; font-size: 17px; background: #fff; color: var(--ink); }
     .cta-box .btn:hover { background: #f0ede8; }
 
+    /* footer */
+    .ft { border-top: 1px solid var(--line); padding: 28px 0 40px; }
+    .ft .wrap { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .ft-links { display: flex; gap: 20px; flex-wrap: wrap; }
+    .ft-links a { font-size: 13.5px; color: var(--ink-soft); font-weight: 500; }
+    .ft-links a:hover { color: var(--ink); text-decoration: underline; }
+    .ft-copy { font-size: 13px; color: var(--faint); }
+
     /* reveal on scroll */
     .reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1); }
     .reveal.is-visible { opacity: 1; transform: translateY(0); }
@@ -147,13 +170,9 @@
       <p class="tagline">"그 얘기, 저번 회의에서도 하지 않았나요?"<br />결론 없이 길어지는 회의…<br />말할 타이밍을 놓친 팀원을 위해 만들었습니다.</p>
       <a href="/app.html" class="btn btn-primary">프로젝트 시작하기</a>
       <p class="free-note">팀원으로 초대받으셨나요? 공유받은 링크로 들어가 구글 계정으로 로그인하면 바로 참여됩니다.</p>
-
-      <div class="sticky-cluster">
-        <div class="snote" style="background:var(--pink)">회의 전에 각자<br />의견 먼저 적기</div>
-        <div class="snote" style="background:var(--blue)">비슷한 얘기는<br />하나로 병합</div>
-        <div class="snote" style="background:var(--olive)">진짜 문제만<br />골라내기</div>
-        <div class="snote" style="background:var(--purple)">우선순위는<br />투표로 결정</div>
-      </div>
+      <!-- 히어로의 포스트잇 4장 미리보기는 제거했다. 아래 "다섯 단계로 이어지는 흐름"과 같은 내용을
+           한 페이지에서 두 번 말하는 중복이었고, 특히 그 4장은 "병합"을 독립 단계로 소개하고 있어서
+           병합을 의견 작성 안의 기능으로 정리한 현재 5단계 구성과 서로 어긋난 상태였다. -->
     </div>
   </section>
 
@@ -293,11 +312,22 @@
     <div class="wrap reveal">
       <div class="cta-box">
         <h2>다음 회의는, 결론이 남는 회의로</h2>
-        <p>프로젝트 하나 만드는 데 30초. 팀원 초대는 링크 하나면 됩니다.</p>
+        <p>프로젝트 하나 만드는 데 30초. 팀원 초대는 링크 하나면 됩니다 — 받은 링크로 들어가 구글 계정으로 로그인하면 바로 참여됩니다.</p>
         <a href="/app.html" class="btn">프로젝트 시작하기</a>
       </div>
     </div>
   </section>
+
+  <!-- footer -->
+  <footer class="ft">
+    <div class="wrap">
+      <nav class="ft-links">
+        <a href="/terms.html">이용약관</a>
+        <a href="/privacy.html">개인정보처리방침</a>
+      </nav>
+      <div class="ft-copy">© 2026 Onalign</div>
+    </div>
+  </footer>
 
   <script>
     (function () {

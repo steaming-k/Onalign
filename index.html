@@ -78,8 +78,9 @@
 
     /* flow */
     .flow { padding: 36px 0; }
-    .flow-row { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
-    .fstep { width: 170px; background: #fff; border: 1px solid rgba(36,35,34,.1); border-radius: 16px; padding: 20px 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    .flow-row { display: flex; align-items: stretch; justify-content: center; gap: 8px; flex-wrap: wrap; }
+    .flow-row > svg { align-self: center; flex-shrink: 0; }
+    .fstep { width: 170px; min-height: 180px; background: #fff; border: 1px solid rgba(36,35,34,.1); border-radius: 16px; padding: 20px 16px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
     .fstep .n { width: 36px; height: 36px; margin: 0 auto 13px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; color: #54524f; }
     .fstep h3 { font-weight: 700; font-size: 16px; margin: 0 0 4px; }
     .fstep p { font-size: 13.5px; color: var(--muted); line-height: 1.4; margin: 0; }
@@ -91,6 +92,13 @@
     .dcard-icon { width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; }
     .dcard h3 { font-size: 18px; font-weight: 700; margin: 0 0 8px; text-align: center; }
     .dcard p { font-size: 14px; line-height: 1.6; color: #6f6b66; margin: 0; text-align: center; }
+
+    /* document export */
+    .docs { padding: 10px 0 40px; }
+    .docs-box { background: var(--paper); border-radius: 24px; padding: 50px 40px; text-align: center; }
+    .docs-icon { width: 52px; height: 52px; border-radius: 14px; background: var(--teal); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; }
+    .docs-box .sec-title { margin-bottom: 14px; }
+    .docs-copy { max-width: 640px; margin: 0 auto; color: var(--ink-soft); font-size: 15.5px; line-height: 1.7; }
 
     /* final CTA */
     .cta { padding: 30px 0 90px; }
@@ -106,8 +114,18 @@
 
     @media (max-width: 820px) {
       .grid-2, .grid-3 { grid-template-columns: 1fr; }
-      .flow-row { flex-direction: column; }
-      .flow-row svg { transform: rotate(90deg); }
+    }
+    /* 5단계(fstep 170px x5 + 화살표 4개 + gap)는 한 줄로 놓으려면 ~1000px가 필요하다.
+       그 아래 폭에서는 화살표가 있는 한 줄 흐름 대신 3열 그리드로 바꿔 "위 3개 · 아래 2개"로
+       자연스럽게 줄바꿈되게 한다(화살표는 줄 사이를 이을 수 없어 숨긴다 — 원 안 번호가 순서를 대신 전달).
+       진짜 좁은 화면(휴대폰)에서만 1열로 완전히 세로 쌓는다. */
+    @media (max-width: 1060px) {
+      .flow-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      .flow-row > svg { display: none; }
+      .fstep { width: auto; }
+    }
+    @media (max-width: 640px) {
+      .flow-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -128,7 +146,7 @@
       <h1>흩어진 의견을,<br />하나의 방향으로</h1>
       <p class="tagline">"그 얘기, 저번 회의에서도 하지 않았나요?"<br />결론 없이 길어지는 회의…<br />말할 타이밍을 놓친 팀원을 위해 만들었습니다.</p>
       <a href="/app.html" class="btn btn-primary">프로젝트 시작하기</a>
-      <p class="free-note">팀원으로 초대받으셨나요? 공유받은 링크로 바로 들어가시면 됩니다.</p>
+      <p class="free-note">팀원으로 초대받으셨나요? 공유받은 링크로 들어가 구글 계정으로 로그인하면 바로 참여됩니다.</p>
 
       <div class="sticky-cluster">
         <div class="snote" style="background:var(--pink)">회의 전에 각자<br />의견 먼저 적기</div>
@@ -213,15 +231,17 @@
   <!-- flow -->
   <section class="flow">
     <div class="wrap reveal">
-      <h2 class="sec-title" style="margin-bottom:30px">네 단계로 이어지는 흐름</h2>
+      <h2 class="sec-title" style="margin-bottom:30px">다섯 단계로 이어지는 흐름</h2>
       <div class="flow-row">
-        <div class="fstep"><div class="n" style="background:var(--pink)">1</div><h3>의견 작성</h3><p>각자 동시에 적기</p></div>
+        <div class="fstep"><div class="n" style="background:var(--pink)">1</div><h3>의견 작성</h3><p>각자 자유롭게 의견을 씁니다</p></div>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c4bfb8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-        <div class="fstep"><div class="n" style="background:var(--blue)">2</div><h3>병합</h3><p>비슷한 건 합치기</p></div>
+        <div class="fstep"><div class="n" style="background:var(--blue)">2</div><h3>문제 정리</h3><p>비슷한 의견을 합치고, 중요한 문제로 추립니다</p></div>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c4bfb8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-        <div class="fstep"><div class="n" style="background:var(--olive)">3</div><h3>문제 정리</h3><p>짚을 것만 추리기</p></div>
+        <div class="fstep"><div class="n" style="background:var(--olive)">3</div><h3>우선순위 투표</h3><p>가장 시급한 문제에 투표합니다</p></div>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c4bfb8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-        <div class="fstep"><div class="n" style="background:var(--purple)">4</div><h3>우선순위 투표</h3><p>다 같이 결정</p></div>
+        <div class="fstep"><div class="n" style="background:var(--purple)">4</div><h3>회고</h3><p>프로젝트가 끝나면, 그 문제가 실제로 해결됐는지 KPT로 되짚습니다</p></div>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c4bfb8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        <div class="fstep"><div class="n" style="background:var(--tan)">5</div><h3>문서화</h3><p>전체 과정을 문서로 정리하거나, AI에 바로 넘길 프롬프트로 뽑아냅니다</p></div>
       </div>
     </div>
   </section>
@@ -241,8 +261,8 @@
           <div class="dcard-icon" style="background:var(--purple)">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6d557d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
-          <h3>말이 느린 사람도 OK</h3>
-          <p>모두가 동시에 적습니다.<br />말할 타이밍을 기다릴 필요 없이,<br />생각을 온전히 남길 수 있습니다.</p>
+          <h3>말이 느린 사람도, 늦지 않습니다</h3>
+          <p>구글 계정으로 로그인하면 끝. 팀원 전원이 자기 속도로, 동시에 씁니다. 손이 느려도, 말주변이 없어도 상관없습니다.</p>
         </div>
         <div class="dcard">
           <div class="dcard-icon" style="background:var(--blue)">
@@ -251,6 +271,19 @@
           <h3>시작과 끝을 잇다</h3>
           <p>아이디어부터 결과 문서까지 한 프로젝트 안에. 회고할 때 "그때 왜 이렇게 정했지"를 다시 찾을 수 있습니다.</p>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- document export -->
+  <section class="docs">
+    <div class="wrap reveal">
+      <div class="docs-box">
+        <div class="docs-icon">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#3f8a72" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+        </div>
+        <h2 class="sec-title">회의가 끝나면, 문서까지</h2>
+        <p class="docs-copy">포스트잇, 회고, 회의 녹음까지 — 모든 기록을 문서 하나로 정리합니다. Word나 마크다운으로 바로 받아도 되고, 정리된 프롬프트를 복사해서 평소 쓰시는 AI(ChatGPT, Claude, Gemini 등)에 붙여넣기만 해도 됩니다.</p>
       </div>
     </div>
   </section>

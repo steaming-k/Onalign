@@ -180,6 +180,10 @@ const emptyBoard = () => ({
 const RECORDING_HEARTBEAT_MS = 10000;
 const RECORDING_STALE_MS = 35000;
 
+// 문서 스냅샷(버전 고정) 보관 개수 상한. 스냅샷은 문서 전체 계산 결과를 통째로 복사해 두므로
+// 무제한으로 쌓이게 두면 board(kv_store 한 행)가 계속 커진다 — 오래된 것부터 자동으로 밀어낸다.
+const MAX_SNAPSHOTS = 10;
+
 // 이전 버전에서 저장된 보드를 열어도 깨지지 않도록 보정한다.
 // 특히 구버전의 별도 problems 배열을 note.isProblem + votes 재키잉으로 마이그레이션한다.
 function normalizeBoard(raw) {
@@ -1162,7 +1166,7 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
 }
 
 export default function FacilitationBoard() {
-  const { user, authLoading, signInWithGoogle, signOut } = useAuth();
+  const { user, authLoading, sessionExpired, signInWithGoogle, signOut } = useAuth();
   // 공유 링크(?p=프로젝트id)로 들어온 경우: 로그인은 여전히 필수지만(팀원도 구글 로그인 필요),
   // 로그인만 하면 "내 프로젝트" 목록을 거치지 않고 이 프로젝트로 바로 진입시킨다.
   // setSharedProjectId로 지울 수 있어야 한다: 링크로 들어온 뒤 "내 프로젝트"를 눌러 목록으로
@@ -1259,11 +1263,14 @@ export default function FacilitationBoard() {
 
   // 프로젝트 목록 로드. RLS 자체는 전체 열람을 허용하지만(공유 링크로 팀원이 들어와야 하므로),
   // "내 프로젝트" 목록에는 로그인 여부에 따라 이 쿼리가 좁혀서 보여준다:
-  // 로그인 상태면 내 owner_id 것만, 비로그인이면 아직 아무도 귀속되지 않은(owner_id null) 것만.
+  // 로그인 상태면 내 owner_id인 것 + 아직 아무에게도 귀속 안 된(owner_id null) 것, 비로그인이면 owner_id null인 것만.
+  // owner_id null도 같이 보여줘야 하는 이유: 로그인 필수화 이전에 만든 프로젝트는 owner_id가 비어 있는데,
+  // "열면 자동 귀속"(아래 claim 이펙트)이 동작하려면 애초에 목록에 보여서 "열기"를 누를 수 있어야 한다.
+  // 이걸 빼먹으면 로그인한 사용자에게는 그 프로젝트가 영영 안 보이는 것처럼 되어버린다.
   const loadProjects = useCallback(async () => {
     try {
       let query = supabase.from("projects").select("*").order("created_at", { ascending: false });
-      query = user ? query.eq("owner_id", user.id) : query.is("owner_id", null);
+      query = user ? query.or(`owner_id.eq.${user.id},owner_id.is.null`) : query.is("owner_id", null);
       const { data, error } = await query;
       if (error) throw error;
       setProjects((data || []).map(fromDbProject));
@@ -1277,11 +1284,18 @@ export default function FacilitationBoard() {
   }, [loadProjects]);
 
   // 공유 링크(?p=id)로 들어온 경우 목록 화면을 거치지 않고 그 프로젝트를 바로 연다.
+  // maybeSingle()은 행이 없어도 error 없이 data=null만 반환하므로, "아직 조회 중"과 "그런 프로젝트가
+  // 없음"을 구분할 방법이 원래 없었다 — 존재하지 않는 id로 들어오면 이 상태로 영원히 멈춰서
+  // 화면에는 "프로젝트를 불러오는 중입니다..."가 무한히 떠 있었다. sharedProjectNotFound로 구분한다.
+  const [sharedProjectNotFound, setSharedProjectNotFound] = useState(false);
   useEffect(() => {
     if (!sharedProjectId || selectedProject) return;
+    setSharedProjectNotFound(false);
     (async () => {
       const { data, error } = await supabase.from("projects").select("*").eq("id", sharedProjectId).maybeSingle();
-      if (!error && data) setSelectedProject(fromDbProject(data));
+      if (error) return; // 네트워크 등 일시적 오류 — "없음"으로 단정하지 않고 그대로 둔다(재진입 시 재시도)
+      if (data) setSelectedProject(fromDbProject(data));
+      else setSharedProjectNotFound(true); // error 없이 data도 없음 = 그런 id의 프로젝트가 실제로 없다
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedProjectId]);
@@ -1366,11 +1380,12 @@ export default function FacilitationBoard() {
 
   const backToProjects = () => {
     setSelectedProject(null);
-    setName(null);
     setLoaded(false);
     setMergeMode(false);
     setSelected([]);
     setBoard(emptyBoard());
+    setProjectDeleted(false);
+    setSharedProjectNotFound(false);
     // 공유 링크(?p=)로 들어온 뒤 "내 프로젝트"로 돌아가는 경우: 이 값이 남아있으면 shared-link
     // effect가 방금 나온 프로젝트로 다시 데려간다. 목록 화면으로 확실히 돌아가도록 지운다.
     if (sharedProjectId) {
@@ -1405,15 +1420,32 @@ export default function FacilitationBoard() {
   // title/goal/pinned는 원래도 그랬지만, 이번에 instructions·votesPerUser까지 여기로 옮기면서
   // "오너가 STEP 배너·투표권을 바꿔도 팀원 화면엔 새로고침 전까지 안 보이는" 회귀가 생겨 함께 폴링한다.
   const lastProjectRawRef = useRef(null);
+  // 오너가 프로젝트를 삭제하면 이 행이 사라진다. 예전엔 error도 없이 data만 null이 되는 이 경우를
+  // "변경 없음"과 똑같이 조용히 return해서, 삭제 직전 화면이 그대로 멈춰 있는 것처럼 보였다
+  // (계속 입력하면 project row 없는 kv_store 고아 데이터만 새로 쌓임). error(네트워크 등 일시적 문제)는
+  // "삭제됐다"로 단정하지 않고 그냥 다음 폴링을 기다린다 — data가 없는 경우만 확실한 삭제로 본다.
+  const [projectDeleted, setProjectDeleted] = useState(false);
   const refreshSelectedProject = useCallback(async () => {
     if (!selectedProject) return;
     const { data, error } = await supabase.from("projects").select("*").eq("id", selectedProject.id).maybeSingle();
-    if (error || !data) return;
+    if (error) return;
+    if (!data) {
+      setProjectDeleted(true);
+      return;
+    }
     const raw = JSON.stringify(data);
     if (raw === lastProjectRawRef.current) return; // 변경 없으면 리렌더 생략(유휴 버벅임 방지, board 폴링과 동일 패턴)
     lastProjectRawRef.current = raw;
     setSelectedProject(fromDbProject(data));
   }, [selectedProject?.id]);
+
+  // 삭제 감지 후 안내를 잠깐 보여준 뒤 목록으로 자동 이동한다(버튼도 같이 둬서 바로 나갈 수도 있게).
+  useEffect(() => {
+    if (!projectDeleted) return;
+    const t = setTimeout(() => backToProjects(), 2500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectDeleted]);
 
   // 보드 상태를 통째로 저장. 여러 하위 키로 쪼개면 동시 수정 시 last-write-wins로 유실될 위험이 커서
   // 하나의 키 안에서 전체 객체를 갱신하는 방식을 쓴다
@@ -1602,7 +1634,9 @@ export default function FacilitationBoard() {
     };
     await loadBoard();
     const current = boardRef.current;
-    await saveBoard({ ...current, snapshots: [...(current.snapshots || []), snapshot] });
+    // 오래된 것부터 자동 정리: 시간순 정렬 후 최근 MAX_SNAPSHOTS개만 남긴다.
+    const next = [...(current.snapshots || []), snapshot].sort((a, b) => a.at - b.at).slice(-MAX_SNAPSHOTS);
+    await saveBoard({ ...current, snapshots: next });
   };
 
   const deleteSnapshot = async (id) => {
@@ -1677,6 +1711,15 @@ export default function FacilitationBoard() {
     await loadBoard();
     const current = boardRef.current;
     const chosen = current.notes.filter((n) => selected.includes(n.id));
+    // 선택 후 실제 병합 실행 사이(loadBoard로 다시 읽어오는 그 순간)에 다른 참여자가 선택된 것 중
+    // 일부를 지웠을 수 있다. chosen은 이미 "그 시점에 실제로 존재하는 것"만 남은 상태라 살아남은
+    // 것끼리는 그대로 병합을 진행하면 되고, 2개 미만으로 줄었을 때만(병합 자체가 의미 없음) 조용히
+    // 취소한다 — 전에는 이 경우 chosen[0]이 undefined라 바로 아래에서 크래시했다.
+    if (chosen.length < 2) {
+      setSelected([]);
+      setMergeMode(false);
+      return;
+    }
     const rest = current.notes.filter((n) => !selected.includes(n.id));
     const votes = { ...current.votes };
     selected.forEach((id) => delete votes[id]); // 병합되어 사라지는 노트의 표는 정리
@@ -2220,6 +2263,15 @@ export default function FacilitationBoard() {
         <TopBar onProjects={backToProjects} />
         <div style={{ minHeight: "70vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ textAlign: "center", maxWidth: 380 }}>
+            {/* sessionExpired: 사용자가 직접 로그아웃한 게 아니라(1시간 무활동, 구글 토큰 갱신 실패
+                등으로) 세션이 예상 못 하게 사라진 경우. 평소의 로그인 유도 문구 대신 "왜 여기로
+                돌아왔는지"부터 알려준다 — 안 그러면 방금까지 잘 쓰고 있었는데 갑자기 로그인 화면이
+                떠서 뭐가 잘못됐나 당황하게 된다. */}
+            {sessionExpired && (
+              <div style={{ background: "#fdeaea", border: "1px solid #ffcaca", borderRadius: 10, padding: "10px 14px", marginBottom: 18, fontSize: 13.5, color: "#c0392b", fontWeight: 600 }}>
+                로그인이 만료되었습니다. 다시 로그인해주세요.
+              </div>
+            )}
             <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>
               {sharedProjectId ? "회의에 참여하기" : "내 프로젝트"}
             </h1>
@@ -2248,7 +2300,29 @@ export default function FacilitationBoard() {
 
   // ---- 화면 1: 프로젝트 목록 / 생성 (이 아래부터는 항상 로그인된 상태) ----
   if (!selectedProject) {
-    // 공유 링크(?p=id)로 들어왔는데 아직 그 프로젝트를 못 찾은 상태(조회 중이거나 존재하지 않는 id)
+    // 공유 링크(?p=id)로 들어왔는데 그 id의 프로젝트가 실제로 없는 경우(삭제됐거나, 링크 오타 등)
+    if (sharedProjectId && sharedProjectNotFound) {
+      return (
+        <div>
+          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+          <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+            <div style={{ textAlign: "center", maxWidth: 380 }}>
+              <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>프로젝트를 찾을 수 없습니다</h1>
+              <p style={{ fontSize: 14.5, color: "#8a857f", margin: "0 0 24px", lineHeight: 1.6 }}>
+                링크가 잘못됐거나, 오너가 이 프로젝트를 삭제했을 수 있어요.
+              </p>
+              <button
+                onClick={backToProjects}
+                style={{ background: "#242322", color: "#fff", border: "none", borderRadius: 11, padding: "12px 22px", fontWeight: 700, fontSize: 14.5, cursor: "pointer" }}
+              >
+                내 프로젝트로 이동
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // 공유 링크(?p=id)로 들어왔는데 아직 그 프로젝트를 조회 중인 상태
     if (sharedProjectId) {
       return (
         <div>
@@ -2426,11 +2500,16 @@ export default function FacilitationBoard() {
     const voters = board.votes[note.id] || [];
     const iVoted = voters.includes(name);
     const voteDisabled = !iVoted && votesLeft <= 0;
+    // "문제로"·"보류"는 이미 정리가 끝난(또는 나중으로 미룬) 상태로 보고 병합 선택 대상에서 뺀다 —
+    // 병합은 "아직 정리 안 된 원본 의견을 하나로 합치는" 단계라, 이미 다음 단계로 넘어간 항목을
+    // 여기서 또 합치면 문제 정리·투표 맥락이 흐트러진다.
+    const mergeExcluded = note.isProblem || note.isParked;
     return (
       <motion.div
         key={note.id}
         {...popIn}
-        onClick={() => mergeMode && toggleSelect(note.id, note.topicId)}
+        onClick={() => mergeMode && !mergeExcluded && toggleSelect(note.id, note.topicId)}
+        title={mergeMode && mergeExcluded ? "문제로 표시되었거나 보류된 항목은 병합할 수 없습니다" : undefined}
         style={{
           flex: "0 0 190px",
           width: 190,
@@ -2439,6 +2518,7 @@ export default function FacilitationBoard() {
           color: "#242322",
           borderRadius: 6,
           boxShadow: "0 2px 8px rgba(36,35,34,.09)",
+          opacity: mergeMode && mergeExcluded ? 0.5 : 1,
           border: isSel
             ? "2px solid #0066ff"
             : note.isProblem
@@ -2446,7 +2526,7 @@ export default function FacilitationBoard() {
             : note.isParked
             ? "1px dashed rgba(36,35,34,.35)"
             : "1px solid rgba(36,35,34,.06)",
-          cursor: mergeMode ? "pointer" : "default",
+          cursor: mergeMode ? (mergeExcluded ? "not-allowed" : "pointer") : "default",
           display: "flex",
           flexDirection: "column",
           boxSizing: "border-box",
@@ -2621,6 +2701,30 @@ export default function FacilitationBoard() {
       </motion.div>
     );
   };
+
+  // 폴링 중에 오너가 이 프로젝트를 삭제한 경우: 삭제 직전 화면이 멈춘 채로 보이는 대신
+  // 안내를 띄우고(2.5초 뒤 자동으로, 또는 버튼으로 바로) 목록으로 돌려보낸다.
+  if (projectDeleted) {
+    return (
+      <div>
+        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+        <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ textAlign: "center", maxWidth: 380 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>이 프로젝트는 삭제되었습니다</h1>
+            <p style={{ fontSize: 14.5, color: "#8a857f", margin: "0 0 24px", lineHeight: 1.6 }}>
+              프로젝트 오너가 삭제했어요. 잠시 후 내 프로젝트 목록으로 이동합니다.
+            </p>
+            <button
+              onClick={backToProjects}
+              style={{ background: "#242322", color: "#fff", border: "none", borderRadius: 11, padding: "12px 22px", fontWeight: 700, fontSize: 14.5, cursor: "pointer" }}
+            >
+              지금 바로 이동
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ---- 화면 3: 보드 본체 ----
   return (

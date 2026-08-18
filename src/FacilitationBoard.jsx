@@ -172,6 +172,9 @@ const emptyBoard = () => ({
   // 그러면 나머지 전원이 영영 녹음을 못 하게 된다. 녹음 중에는 주기적으로 이 값을 갱신하고,
   // 갱신이 끊긴 지 오래면(RECORDING_STALE_MS) 죽은 점유로 보고 자동으로 풀어준다.
   recordingAt: 0,
+  // 탭/화면 오디오도 함께 녹음할 때 뜨는 "참여자 전원에게 알렸습니까?" 확인 모달을 이 프로젝트에서
+  // 이미 한 번 확인했는지. 프로젝트당 1회만 물어보기로 해서, 한 번 true가 되면 다시 묻지 않는다.
+  recordingConsentAck: false,
 });
 
 // 하트비트가 이 시간 넘게 끊기면 "녹음자가 사라졌다"고 보고 점유를 해제한다.
@@ -206,6 +209,7 @@ function normalizeBoard(raw) {
   b.recordingAt = typeof b.recordingAt === "number" ? b.recordingAt : 0;
   b.minutesClosed = b.minutesClosed === true;
   b.snapshots = Array.isArray(b.snapshots) ? b.snapshots : [];
+  b.recordingConsentAck = b.recordingConsentAck === true;
 
   // ---- 구버전 problems 배열 마이그레이션 ----
   if (Array.isArray(b.problems)) {
@@ -1166,7 +1170,9 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
 }
 
 export default function FacilitationBoard() {
-  const { user, authLoading, sessionExpired, signInWithGoogle, signOut } = useAuth();
+  // 회의 녹음 중에는 1시간 무활동 자동 로그아웃을 멈춘다(useAuth에 넘기는 ref, 아래서 micRecording과 동기화).
+  const recordingActiveRef = useRef(false);
+  const { user, authLoading, sessionExpired, signInWithGoogle, signOut } = useAuth(recordingActiveRef);
   // 공유 링크(?p=프로젝트id)로 들어온 경우: 로그인은 여전히 필수지만(팀원도 구글 로그인 필요),
   // 로그인만 하면 "내 프로젝트" 목록을 거치지 않고 이 프로젝트로 바로 진입시킨다.
   // setSharedProjectId로 지울 수 있어야 한다: 링크로 들어온 뒤 "내 프로젝트"를 눌러 목록으로
@@ -1224,8 +1230,23 @@ export default function FacilitationBoard() {
   const [minutesLang, setMinutesLang] = useState("ko-KR");
   const minutesLangRef = useRef("ko-KR");
   minutesLangRef.current = minutesLang;
+  recordingActiveRef.current = micRecording; // useAuth의 무활동 타이머 정지 여부와 동기화
   const recognitionRef = useRef(null); // SpeechRecognition 인스턴스
   const wantRecordingRef = useRef(false); // 사용자가 "녹음 중"을 의도하는지 (자동 재시작 판단용)
+  // ===== 탭/화면 오디오 캡처 확장 (마이크 단독의 대안, 실험적) =====
+  // 사용자가 체크박스로 켜면 getDisplayMedia로 탭 오디오를 더 받아 마이크와 섞는다. 이 블록의
+  // 모든 실패 경로는 조용히 마이크 단독(mic-only)으로 폴백한다 — 기존 동작을 절대 깨서는 안 된다.
+  const [tabAudioOption, setTabAudioOption] = useState(false); // 사용자가 이번 녹음에 탭 오디오도 원하는지
+  // null=아직 판정 전, "mic-only"=기존과 동일, "tab-audio-file-only"=파일엔 양쪽, 자막은 마이크만,
+  // "tab-audio-full"=자막에도 양쪽 반영(가장 이상적이나 브라우저 지원이 검증 안 된 실험적 경로)
+  const [recordingTier, setRecordingTier] = useState(null);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState(null); // 방금 끝난 세션의 오디오 파일 다운로드 링크
+  const micStreamRef = useRef(null); // 믹싱용으로 우리가 직접 잡은 마이크 스트림(SpeechRecognition 내부 마이크와 별개)
+  const displayStreamRef = useRef(null); // getDisplayMedia 스트림(오디오만 실제로 쓰고, 비디오는 즉시 정지)
+  const audioCtxRef = useRef(null);
+  const mixedDestRef = useRef(null); // MediaStreamAudioDestinationNode(마이크+탭 오디오 합성 결과)
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
   const boardRef = useRef(board);
   boardRef.current = board;
   // 드래그 중이거나 포스트잇을 편집 중일 때는 2초 폴링이 로컬 변경을 덮어쓰지 않도록 잠시 멈춘다
@@ -1827,10 +1848,126 @@ export default function FacilitationBoard() {
   const getSpeechRecognition = () =>
     typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
 
-  // 마이크 음성 인식 시작. Web Speech API는 오직 마이크 입력만 인식한다
-  // (탭/시스템 오디오는 이 API로 직접 캡처 불가). 온라인 회의라도 스피커로 나오는 소리를
-  // 마이크가 음향적으로 함께 주워 담아 텍스트화된다.
-  const startRecognition = () => {
+  // "탭/화면 오디오도 함께 녹음" 옵션 자체를 보여줄지 판단하는 사전(soft) 필터. User-Agent 판별은
+  // 참고용 힌트일 뿐이고, 실제 지원 여부의 최종 판단은 getDisplayMedia 호출 결과(하드 체크)로 한다.
+  // Firefox·Safari는 API가 있어도 지원이 불안정하거나(트랙 없이 조용히 성공) UX가 크게 달라 숨긴다.
+  const supportsTabAudioCaptureUA = () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) return false;
+    const ua = navigator.userAgent || "";
+    if (/firefox/i.test(ua)) return false;
+    if (/^((?!chrome|android).)*safari/i.test(ua)) return false; // Chrome/Android는 UA에 Safari도 포함하므로 이렇게 걸러야 실제 Safari만 남는다
+    return true;
+  };
+
+  // 탭/화면 오디오 캡처를 시도해 마이크와 섞은 합성 트랙을 만든다. 실패하면(미지원·거부·오디오
+  // 트랙 0개) 조용히 null을 돌려줘 호출부가 기존 마이크 단독 경로로 폴백하게 한다 — 여기서
+  // 사용자에게 에러를 보여주지 않는다(3-1, 3-3 요구사항).
+  const tryStartTabAudioMix = async () => {
+    let displayStream;
+    try {
+      displayStream = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+    } catch (e) {
+      return null; // 사용자가 공유를 취소했거나 브라우저가 거부
+    }
+    // video:true는 API 제약상 요청만 필요할 뿐, 화면 자체는 녹화·표시하지 않으므로 즉시 정지한다.
+    displayStream.getVideoTracks().forEach((t) => t.stop());
+    const displayAudioTracks = displayStream.getAudioTracks();
+    if (displayAudioTracks.length === 0) {
+      // 하드 체크: Firefox 등은 API가 성공해도 오디오 트랙을 조용히 비워서 돌려줄 수 있다.
+      displayStream.getTracks().forEach((t) => t.stop());
+      return null;
+    }
+    let micStream;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      displayStream.getTracks().forEach((t) => t.stop());
+      return null; // 마이크 권한 문제 — 기존 SpeechRecognition 내장 마이크 경로로 폴백
+    }
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = audioCtx.createMediaStreamDestination();
+      audioCtx.createMediaStreamSource(micStream).connect(dest);
+      audioCtx.createMediaStreamSource(new MediaStream(displayAudioTracks)).connect(dest);
+      displayStreamRef.current = displayStream;
+      micStreamRef.current = micStream;
+      audioCtxRef.current = audioCtx;
+      mixedDestRef.current = dest;
+      return dest.stream.getAudioTracks()[0];
+    } catch (e) {
+      try {
+        audioCtxRef.current?.close();
+      } catch (e2) {
+        /* noop */
+      }
+      displayStream.getTracks().forEach((t) => t.stop());
+      micStream.getTracks().forEach((t) => t.stop());
+      return null;
+    }
+  };
+
+  // 합성 트랙이 준비돼 있으면 그 트랙을 그대로 파일로 저장하기 시작한다. 이 저장 파이프라인은
+  // 아래 실시간 인식(recognition)이 성공하든 실패하든 독립적으로 계속 돈다(3-4 요구사항).
+  const startMediaRecorderIfReady = () => {
+    const dest = mixedDestRef.current;
+    if (!dest) return;
+    recordedChunksRef.current = [];
+    let recorder;
+    try {
+      recorder = new MediaRecorder(dest.stream);
+    } catch (e) {
+      return; // MediaRecorder 미지원이면 파일 저장만 조용히 포기하고 실시간 인식은 그대로 진행
+    }
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      recordedChunksRef.current = [];
+      setRecordedAudioUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return blob.size > 0 ? URL.createObjectURL(blob) : null;
+      });
+    };
+    mediaRecorderRef.current = recorder;
+    try {
+      recorder.start();
+    } catch (e) {
+      /* noop */
+    }
+  };
+
+  // 탭 오디오 관련으로 잡아둔 자원을 전부 정리한다(마이크/탭 오디오 트랙 정지, AudioContext 닫기,
+  // MediaRecorder 정지 — onstop이 recordedAudioUrl을 채운다). 마이크 단독 경로에서는 애초에
+  // 아무 것도 잡아둔 게 없어 호출해도 아무 일도 일어나지 않는다.
+  const teardownTabAudioCapture = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch (e) {
+        /* noop */
+      }
+    }
+    mediaRecorderRef.current = null;
+    try {
+      audioCtxRef.current?.close();
+    } catch (e) {
+      /* noop */
+    }
+    audioCtxRef.current = null;
+    mixedDestRef.current = null;
+    micStreamRef.current?.getTracks().forEach((t) => t.stop());
+    micStreamRef.current = null;
+    displayStreamRef.current?.getTracks().forEach((t) => t.stop());
+    displayStreamRef.current = null;
+  };
+
+  // track이 없으면 오늘과 완전히 같은 마이크 단독 음성 인식이다.
+  // track이 있으면(탭 오디오 합성 트랙) 실험적인 SpeechRecognition.start(track) 경로를 시도한다 —
+  // 이 파라미터의 실제 지원 여부가 브라우저마다 검증되지 않아, onresult가 일정 시간 안에 오지 않거나
+  // 예외/조기 종료가 나면 "중간" 단계로 보고 새 인식기를 마이크 단독으로 즉시 재시작한다(3-4 요구사항).
+  const startRecognition = (track) => {
     const SR = getSpeechRecognition();
     if (!SR) {
       setSpeechSupported(false);
@@ -1841,7 +1978,39 @@ export default function FacilitationBoard() {
     recognition.continuous = true; // 말이 잠깐 끊겨도 계속 듣는다
     recognition.interimResults = true; // 확정 전 임시 결과도 실시간으로 보여준다
 
+    let resultReceived = false;
+    let gaveUp = false; // 5초 타임아웃이 지나 마이크 단독으로 완전히 넘어갔는지
+    let fallbackTimer = null;
+    // 5초 안에 한 번이라도 onresult가 오면 성공(최상 단계)으로 확정한다. 그 전까지는 no-speech 같은
+    // 흔한 에러로 인식기가 잠깐 끝나도(onend) 실패로 단정하지 않고 같은 track으로 재시도한다 —
+    // 그렇지 않으면 회의 시작 직후의 자연스러운 침묵만으로도 "최상" 단계가 성급하게 포기돼버린다.
+    const giveUpAndFallback = () => {
+      if (gaveUp || recognitionRef.current !== recognition) return;
+      gaveUp = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      try {
+        recognition.abort();
+      } catch (e) {
+        /* noop */
+      }
+      setRecordingTier("tab-audio-file-only");
+      // abort 직후 바로 새 인식기를 시작하면 브라우저 음성 인식 서비스가 아직 안 놓아준 상태일 수
+      // 있어 짧게 텀을 둔다. 그사이 사용자가 멈췄으면(wantRecordingRef가 꺼졌으면) 재시작하지 않는다.
+      setTimeout(() => {
+        if (!wantRecordingRef.current) return;
+        startRecognition(); // track 없이 새 인식기로 — 이제부터는 기존 마이크 단독 경로와 동일
+      }, 200);
+    };
+    if (track) {
+      fallbackTimer = setTimeout(giveUpAndFallback, 5000);
+    }
+
     recognition.onresult = (event) => {
+      if (track && !resultReceived) {
+        resultReceived = true;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        setRecordingTier("tab-audio-full"); // start(track)이 실제로 동작함을 확인한 순간
+      }
       let finalChunk = "";
       let interimChunk = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -1859,7 +2028,8 @@ export default function FacilitationBoard() {
     };
 
     recognition.onerror = (event) => {
-      // no-speech / aborted 등은 흔한 일이므로 조용히 넘어가고, 권한 거부만 사용자에게 알린다
+      // no-speech / aborted 등은 흔한 일이므로 조용히 넘어가고(뒤이어 오는 onend에서 처리),
+      // 권한 거부만 사용자에게 알린다. track 유무와 무관하게 동일하게 적용된다.
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         wantRecordingRef.current = false;
         setMicRecording(false);
@@ -1877,6 +2047,17 @@ export default function FacilitationBoard() {
     recognition.onend = () => {
       // 모드 전환으로 교체된 옛 인스턴스는 재시작·상태변경에 관여하지 않는다(두 인식기 동시 실행 방지).
       if (recognitionRef.current !== recognition) return;
+      if (track && !resultReceived) {
+        if (gaveUp) return; // 이미 타임아웃으로 마이크 단독 전환을 예약해뒀다 — 여기선 아무 것도 안 한다
+        if (!wantRecordingRef.current) return;
+        // 5초 타임아웃 전이라면 아직 실패로 단정하지 않고 같은 track으로 다시 시도한다.
+        try {
+          recognition.start(track);
+        } catch (e) {
+          giveUpAndFallback();
+        }
+        return;
+      }
       if (wantRecordingRef.current) {
         try {
           recognition.start();
@@ -1890,10 +2071,12 @@ export default function FacilitationBoard() {
 
     recognitionRef.current = recognition;
     try {
-      recognition.start();
+      if (track) recognition.start(track);
+      else recognition.start();
       setMicRecording(true);
     } catch (e) {
-      /* 중복 start 예외 무시 */
+      if (track) giveUpAndFallback();
+      /* track 없는 중복 start 예외는 기존과 동일하게 무시 */
     }
   };
 
@@ -1974,6 +2157,7 @@ export default function FacilitationBoard() {
     // stopRecognition()의 setMicRecording(false)보다 먼저 잠금을 건다 (아래 effect 참고).
     minutesSyncSuspendRef.current = true;
     stopRecognition();
+    teardownTabAudioCapture(); // 탭 오디오를 쓴 적 없으면 아무 것도 하지 않는다
     await loadBoard();
     const current = boardRef.current;
     await saveBoard({
@@ -2021,23 +2205,66 @@ export default function FacilitationBoard() {
       return;
     }
 
-    minutesSyncSuspendRef.current = true;
-    wantRecordingRef.current = true;
-    startRecognition();
-    setMinutesOpen(true); // 결과 확인·저장용 패널을 확실히 보여준다
+    // 탭 오디오는 사용자가 체크박스로 켰고 브라우저도 지원 힌트가 있을 때만 시도한다.
+    // 껐거나 미지원이면 아래 proceed()가 오늘과 완전히 같은 마이크 단독 경로로만 간다.
+    const wantsTabAudio = tabAudioOption && supportsTabAudioCaptureUA();
 
-    // 점유자(recordingBy)와 하트비트 시각을 심어 다른 참여자의 시작 버튼을 잠근다.
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({
-      ...current,
-      recording: true,
-      recordingBy: name,
-      recordingAt: Date.now(),
-      minutesClosed: false, // 다시 녹음을 시작하면 마감 상태를 푼다
-      minutes: minutesRef.current,
-    });
-    minutesSyncSuspendRef.current = false;
+    const proceed = async () => {
+      minutesSyncSuspendRef.current = true;
+      wantRecordingRef.current = true;
+      // 이전 세션에서 남은 파일 링크는 새 세션을 시작하면 더 이상 유효한 안내가 아니므로 정리한다.
+      setRecordedAudioUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      setRecordingTier(wantsTabAudio ? null : "mic-only");
+
+      let mergedTrack = null;
+      if (wantsTabAudio) {
+        mergedTrack = await tryStartTabAudioMix();
+        if (mergedTrack) {
+          startMediaRecorderIfReady();
+        } else {
+          setRecordingTier("mic-only"); // 캡처 자체가 실패/거부/미지원 — 조용히 폴백(3-1)
+        }
+      }
+      startRecognition(mergedTrack || undefined);
+      setMinutesOpen(true); // 결과 확인·저장용 패널을 확실히 보여준다
+
+      // 점유자(recordingBy)와 하트비트 시각을 심어 다른 참여자의 시작 버튼을 잠근다.
+      await loadBoard();
+      const current = boardRef.current;
+      await saveBoard({
+        ...current,
+        recording: true,
+        recordingBy: name,
+        recordingAt: Date.now(),
+        minutesClosed: false, // 다시 녹음을 시작하면 마감 상태를 푼다
+        minutes: minutesRef.current,
+        recordingConsentAck: current.recordingConsentAck || wantsTabAudio,
+      });
+      minutesSyncSuspendRef.current = false;
+    };
+
+    // 탭 오디오를 처음 켜는 프로젝트라면, 캡처를 시도하기 전에 참여자 고지 여부를 한 번 확인한다
+    // (프로젝트당 1회 — 이미 확인됐으면 다시 묻지 않는다). 마이크 단독일 때는 기존과 동일하게
+    // 이 확인 절차 자체가 없다.
+    if (wantsTabAudio && !board.recordingConsentAck) {
+      setConfirmState({
+        title: "녹음 시작 전 확인",
+        message:
+          "탭/화면 오디오를 함께 녹음하면 상대방 발화까지 기록에 남습니다. 참여자 전원에게 녹음 사실을 미리 알렸나요?\n\n곧 뜨는 공유 화면 선택 창에서 '오디오 공유'를 꼭 체크해 주세요. 헤드폰 없이 쓰면 스피커 소리를 마이크가 다시 주워 내용이 중복될 수 있어요.",
+        confirmLabel: "네, 알렸습니다 · 시작",
+        onConfirm: () => {
+          setConfirmState(null);
+          proceed();
+        },
+        onCancel: () => setConfirmState(null),
+      });
+      return;
+    }
+
+    await proceed();
   };
 
   // ===== 회의록(minutes) 액션 =====
@@ -4178,6 +4405,18 @@ export default function FacilitationBoard() {
                 <span style={{ fontSize: 14, fontWeight: 700, whiteSpace: "nowrap" }}>
                   {minutesRecording ? "회의록 녹음 중 · 실시간 변환" : "회의록"}
                 </span>
+                {/* 탭 오디오 캡처 진행 상태 배지. "최상"은 자막에도 반영 중, "중간"은 파일에만 반영 중임을 알려
+                    자막이 내 목소리만 담기는 이유를 사용자가 오해하지 않게 한다. */}
+                {minutesRecording && recordingTier === "tab-audio-full" && (
+                  <span title="탭/화면 오디오가 실시간 자막에도 반영되고 있습니다(실험적 기능)" style={{ fontSize: 11, fontWeight: 700, color: "#4f3fd6", background: "#ece9fc", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                    탭 오디오 포함
+                  </span>
+                )}
+                {minutesRecording && recordingTier === "tab-audio-file-only" && (
+                  <span title="자막은 마이크만 반영하지만, 저장될 오디오 파일에는 탭 오디오도 함께 담깁니다" style={{ fontSize: 11, fontWeight: 700, color: "#8a7300", background: "#fff6da", borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                    탭 오디오는 파일에만
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => setMinutesOpen(false)}
@@ -4205,7 +4444,9 @@ export default function FacilitationBoard() {
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px", borderTop: "1px solid rgba(36,35,34,.08)", background: "#faf9f7" }}>
               <div style={{ width: "100%", fontSize: 12, lineHeight: 1.5, color: "#a19c95" }}>
-                {board.minutesClosed && !minutesRecording
+                {!minutesRecording && recordingTier === "tab-audio-file-only" && recordedAudioUrl
+                  ? "방금 녹음은 실시간 자막에 내 목소리만 반영됐지만, 저장된 오디오 파일에는 상대방 목소리도 함께 담겨 있어요. 아래에서 내려받을 수 있습니다."
+                  : board.minutesClosed && !minutesRecording
                   ? '녹음을 종료했습니다. 문서 탭의 "회의 녹취록"에 반영됐고, 문서에서 직접 고칠 수도 있습니다. 다시 녹음하면 뒤에 이어서 쌓입니다.'
                   : '"일시정지"는 마이크만 놓고 나중에 이어서 녹음할 수 있고, "종료"는 녹음을 마치고 문서에 반영합니다(둘 다 지금까지의 내용은 그대로 남습니다). "중복 정리"는 반복된 문장·단어만 걷어냅니다(요약 아님).'}
               </div>
@@ -4231,19 +4472,53 @@ export default function FacilitationBoard() {
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={startRecording}
-                  disabled={recordingLockedByOther}
-                  title={recordingLockedByOther ? `${recordingOwner}님이 녹음 중입니다. 한 번에 한 명만 녹음할 수 있어요.` : ""}
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: recordingLockedByOther ? "#f4f2ef" : "#fff", color: recordingLockedByOther ? "#a19c95" : "#242322", cursor: recordingLockedByOther ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}
-                >
-                  <span style={{ width: 8, height: 8, borderRadius: 999, background: recordingLockedByOther ? "#c4bfb8" : "#ff4242", animation: recordingLockedByOther ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
-                  {recordingLockedByOther
-                    ? `${recordingOwner}님이 녹음 중입니다`
-                    : minutes && !board.minutesClosed
-                    ? "이어서 녹음"
-                    : "회의록 녹음"}
-                </button>
+                <>
+                  {/* 탭/화면 오디오 옵션 — 브라우저 지원 힌트가 없는 Firefox·Safari 등에서는 아예 숨긴다.
+                      실제 지원 여부의 최종 판단은 시작 시점의 하드 체크(getDisplayMedia 결과)로 한다. */}
+                  {supportsTabAudioCaptureUA() && (
+                    <label
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 7,
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "#242322",
+                        cursor: recordingLockedByOther ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={tabAudioOption}
+                        disabled={recordingLockedByOther}
+                        onChange={(e) => setTabAudioOption(e.target.checked)}
+                        style={{ marginTop: 2 }}
+                      />
+                      <span>
+                        탭/화면 오디오도 함께 녹음 (실험적)
+                        {tabAudioOption && (
+                          <span style={{ display: "block", fontWeight: 400, fontSize: 11.5, color: "#a19c95", marginTop: 2 }}>
+                            공유 화면을 고를 때 <b>오디오 공유</b>를 꼭 체크해 주세요. 헤드폰 없이 쓰면 스피커 소리를 마이크가 다시 주워 자막이 중복될 수 있어요.
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  )}
+                  <button
+                    onClick={startRecording}
+                    disabled={recordingLockedByOther}
+                    title={recordingLockedByOther ? `${recordingOwner}님이 녹음 중입니다. 한 번에 한 명만 녹음할 수 있어요.` : ""}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: recordingLockedByOther ? "#f4f2ef" : "#fff", color: recordingLockedByOther ? "#a19c95" : "#242322", cursor: recordingLockedByOther ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600 }}
+                  >
+                    <span style={{ width: 8, height: 8, borderRadius: 999, background: recordingLockedByOther ? "#c4bfb8" : "#ff4242", animation: recordingLockedByOther ? "oaRecPulse 1.1s ease-in-out infinite" : "none" }} />
+                    {recordingLockedByOther
+                      ? `${recordingOwner}님이 녹음 중입니다`
+                      : minutes && !board.minutesClosed
+                      ? "이어서 녹음"
+                      : "회의록 녹음"}
+                  </button>
+                </>
               )}
               {/* 인식 언어. 녹음 중에는 바꿀 수 없다 — 도중에 바꾸면 현재 인식기에는 반영되지 않아
                   "바꿨는데 그대로"로 보이기 때문. 멈춘 뒤 바꿔서 이어 녹음하면 그때부터 적용된다. */}
@@ -4281,6 +4556,16 @@ export default function FacilitationBoard() {
               >
                 .txt 다운로드
               </button>
+              {/* 탭 오디오를 섞어 녹음한 세션에만 나타난다(마이크 단독 경로는 파일 저장 자체를 하지 않는다). */}
+              {recordedAudioUrl && (
+                <a
+                  href={recordedAudioUrl}
+                  download={`${selectedProject?.title || "회의록"}-녹음.webm`}
+                  style={{ display: "flex", alignItems: "center", padding: "8px 13px", borderRadius: 8, border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#242322", cursor: "pointer", fontSize: 13, fontWeight: 600, textDecoration: "none" }}
+                >
+                  🎧 녹음 파일(.webm) 다운로드
+                </a>
+              )}
               <button
                 onClick={clearMinutes}
                 disabled={!minutes || minutesMutationBlocked}

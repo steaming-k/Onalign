@@ -45,7 +45,7 @@ export default function ConfirmDialog({
             }}
           >
             {title && <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: "#202020" }}>{title}</div>}
-            <div style={{ fontSize: 14, color: "#555", lineHeight: 1.5, marginBottom: 16 }}>{message}</div>
+            <div style={{ fontSize: 14, color: "#555", lineHeight: 1.5, marginBottom: 16, whiteSpace: "pre-wrap" }}>{message}</div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button
                 onClick={onCancel}

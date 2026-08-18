@@ -46,7 +46,9 @@ function isIdleExpired() {
   }
 }
 
-export function useAuth() {
+// suspendIdleRef: 호출 쪽에서 넘기는 ref. current가 true인 동안은(예: 회의 녹음 중) 무활동으로
+// 보지 않고 오히려 활동시각을 계속 갱신한다 — 회의 중 마우스·키보드 조작이 없어도 로그아웃되지 않게 하기 위함.
+export function useAuth(suspendIdleRef) {
   // undefined = 아직 세션 확인 중, null = 로그아웃 상태, 객체 = 로그인됨
   const [session, setSession] = useState(undefined);
   // 세션이 "예상 못 하게" 사라졌는지(구글 토큰 만료, refresh 실패, 1시간 무활동 등) — 사용자가
@@ -104,6 +106,10 @@ export function useAuth() {
     const onActivity = () => markActive();
     ACTIVITY_EVENTS.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
     const checkExpired = () => {
+      if (suspendIdleRef?.current) {
+        markActive(); // 녹음 등 진행 중 — 무활동 판정을 미루고 시계를 계속 지금으로 맞춘다
+        return;
+      }
       if (isIdleExpired()) supabase.auth.signOut();
     };
     const iv = setInterval(checkExpired, 60 * 1000);

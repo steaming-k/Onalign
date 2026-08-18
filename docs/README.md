@@ -114,9 +114,7 @@ Vercel에 연결돼 있으며 `main` 브랜치 push 시 자동 배포된다. 정
 
 ## 더 보기
 
-- 기획서 / PRD : (링크)
-- 사이트 이슈 리포트 : (링크)
-- 제작기 : (링크)
+- 제작기 : https://mekite.tistory.com/category/Portfolio/Project%204.%20Onalign
 
 ## Author
 

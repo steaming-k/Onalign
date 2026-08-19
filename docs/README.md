@@ -114,4 +114,11 @@ Vercel에 연결돼 있으며 `main` 브랜치 push 시 자동 배포된다. 정
 
 ## 더 보기
 
-- 제작기 : https://mekite.tistory.com/category/Portfolio/Project%204.%20Onalign
+- 기획서 / PRD : (링크)
+- 사이트 이슈 리포트 : (링크)
+- 제작기 : (링크)
+
+## Author
+
+**김나연** · Product Manager
+[rlaskdus66@daum.net](mailto:rlaskdus66@daum.net) · [mekite.tistory.com](https://mekite.tistory.com) · [github.com/steaming-k](https://github.com/steaming-k)

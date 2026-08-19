@@ -1281,6 +1281,32 @@ export default function FacilitationBoard() {
       else autoSizeEls.current.delete(el);
     });
   }, []);
+  // 포스트잇 textarea를 note.id별로 추적한다(새로 만든 포스트잇에 커서를 놓기 위함).
+  // autoSizeRef와 같은 일(높이 맞추기 + 추적)을 하면서 id -> 엘리먼트 대응만 추가로 기억한다.
+  // 인라인 화살표 ref를 쓰면 매 렌더마다 detach/attach가 일어나므로 여기서도 안정적인 콜백 하나만 쓴다.
+  const noteTextareaEls = useRef(new Map());
+  const noteTextareaRef = useCallback((el) => {
+    if (el) {
+      noteTextareaEls.current.set(el.dataset.noteId, el);
+      autoSizeEls.current.add(el);
+      autoResizeTextarea(el);
+    }
+  }, []);
+  // 새 포스트잇을 만들면 곧바로 타이핑할 수 있게 커서를 놓는다.
+  // 예전에는 textarea에 autoFocus를 걸어 뒀지만, justCreatedId는 saveBoard(=setBoard로 포스트잇이
+  // 이미 마운트된) 다음에 세팅돼서 마운트 시점엔 항상 false였다 — autoFocus는 마운트할 때만 동작하므로
+  // 실제로는 한 번도 먹지 않았다. 그래서 "+ 포스트잇"을 누른 뒤 바로 입력하면 포커스가 아무 곳에도
+  // 없어서 타이핑이 통째로 사라졌다(저장된 포스트잇이 모두 빈 내용이던 원인).
+  useEffect(() => {
+    if (!justCreatedId) return;
+    const el = noteTextareaEls.current.get(justCreatedId);
+    if (!el) return;
+    if (!el.isConnected) {
+      noteTextareaEls.current.delete(justCreatedId); // 지워진 포스트잇의 옛 엘리먼트는 정리
+      return;
+    }
+    el.focus(); // onFocus 핸들러가 폴링도 함께 멈춰준다(타이핑 중 원격 값에 덮이지 않게)
+  }, [justCreatedId]);
 
   // 프로젝트 목록 로드. RLS 자체는 전체 열람을 허용하지만(공유 링크로 팀원이 들어와야 하므로),
   // "내 프로젝트" 목록에는 로그인 여부에 따라 이 쿼리가 좁혀서 보여준다:
@@ -2816,10 +2842,10 @@ export default function FacilitationBoard() {
           </div>
         ) : (
           <textarea
-            autoFocus={justCreatedId === note.id}
             value={note.text}
             placeholder="자유롭게 적어보세요"
-            ref={autoSizeRef}
+            data-note-id={note.id}
+            ref={noteTextareaRef}
             onChange={(e) => {
               editNoteTextLocal(note.id, e.target.value);
               autoResizeTextarea(e.target);

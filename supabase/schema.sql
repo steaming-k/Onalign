@@ -157,7 +157,19 @@ select
     when (elem ->> 'createdAt') ~ '^\d+$' then to_timestamp((elem ->> 'createdAt')::bigint / 1000.0)
     else now()
   end
-from public.kv_store, jsonb_array_elements(value::jsonb) as elem
+from public.kv_store,
+     -- 주의: FROM 절의 집합 반환 함수는 WHERE보다 먼저(= kv_store의 모든 행에 대해) 평가될 수 있다.
+     -- 보드 행(facilitation-board:*)의 value는 JSON 배열이 아니라 객체라서, 걸러지지 않고 그대로
+     -- 넘어가면 "cannot extract elements from an object"로 실패한다. 지금까지는 플래너가 조건을
+     -- 밀어넣어 줘서 우연히 통과했을 뿐이라, 대상 키·배열 여부를 함수 인자 안에서 직접 걸러
+     -- 빈 배열을 넘긴다(평가 순서와 무관하게 안전).
+     jsonb_array_elements(
+       case
+         when key = 'facilitation-projects-index' and jsonb_typeof(value::jsonb) = 'array'
+           then value::jsonb
+         else '[]'::jsonb
+       end
+     ) as elem
 where key = 'facilitation-projects-index'
 on conflict (id) do nothing;
 
@@ -175,3 +187,50 @@ where b.key = 'facilitation-board:' || p.id
 -- 시 다시 1회"로 변경하면서 이 시점을 계정(profiles)에 저장해야 해서 컬럼을 추가한다.
 -- ============================================================
 alter table public.profiles add column if not exists last_guide_seen_at timestamptz;
+
+-- ============================================================
+-- project_members: 공유 링크로 참여한 사람의 "참여 기록"
+--
+-- 왜 필요한가: 프로젝트 목록은 owner_id 기준으로만 조회한다(내 것 + 아직 미귀속). 그래서 리더가
+-- 만든 프로젝트는 게스트의 목록에 영영 나타나지 않고, 게스트가 다시 들어갈 방법이 "원본 링크를
+-- 다시 찾기" 하나뿐이었다(링크를 잃으면 재진입 불가).
+--
+-- 참여자 정보는 board(kv_store JSON)의 users에도 있지만, 그건 "표시 이름"으로 키잉돼 있어서
+-- 계정(user_id) 기준으로 "내가 참여한 프로젝트"를 조회할 수 없다. 그래서 이 테이블을 따로 둔다.
+-- (덤으로, 앞으로 참여자를 이름이 아니라 user_id로 다루려면 이 테이블이 그 기반이 된다.)
+--
+-- 프로젝트가 삭제되면 참여 기록도 함께 사라져야 하므로 on delete cascade를 걸어둔다.
+-- 적용 방법: 위와 동일하게 SQL Editor에서 그대로 실행(여러 번 실행해도 안전).
+-- ============================================================
+create table if not exists public.project_members (
+  project_id text not null references public.projects (id) on delete cascade,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  joined_at timestamptz not null default now(),
+  last_opened_at timestamptz not null default now(),
+  primary key (project_id, user_id)
+);
+
+alter table public.project_members enable row level security;
+
+-- 본인 참여 기록만 읽고 쓸 수 있다 — 남이 어느 프로젝트에 참여했는지는 볼 수 없어야 한다.
+-- (projects는 공유 링크 때문에 select 전체 허용이지만, "누가 어디에 참여했는지"는 별개의 개인정보다.)
+drop policy if exists "project_members select own" on public.project_members;
+create policy "project_members select own" on public.project_members
+  for select using (auth.uid() = user_id);
+
+drop policy if exists "project_members insert own" on public.project_members;
+create policy "project_members insert own" on public.project_members
+  for insert with check (auth.uid() = user_id);
+
+-- 재진입할 때 last_opened_at을 갱신하므로 update도 본인 것에 한해 허용한다.
+drop policy if exists "project_members update own" on public.project_members;
+create policy "project_members update own" on public.project_members
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "project_members delete own" on public.project_members;
+create policy "project_members delete own" on public.project_members
+  for delete using (auth.uid() = user_id);
+
+-- "내 참여 목록을 최근 열어본 순으로" 조회하는 게 유일한 사용 패턴이라 그에 맞춘 인덱스를 둔다.
+create index if not exists project_members_user_recent_idx
+  on public.project_members (user_id, last_opened_at desc);

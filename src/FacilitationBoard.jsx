@@ -187,6 +187,18 @@ const RECORDING_STALE_MS = 35000;
 // 무제한으로 쌓이게 두면 board(kv_store 한 행)가 계속 커진다 — 오래된 것부터 자동으로 밀어낸다.
 const MAX_SNAPSHOTS = 10;
 
+// 보드 변경 저장이 다른 참여자의 저장과 충돌했을 때 최신값으로 다시 시도하는 최대 횟수.
+const MUTATE_MAX_TRIES = 8;
+// 재시도 전 대기 시간. 백오프 없이 곧바로 다시 시도하면 충돌한 상대와 또 같은 순간에 부딪혀
+// 계속 서로를 밀어낸다(부하 테스트에서 실제로 재시도가 소진됐다). 시도마다 대기를 늘리고
+// 무작위 흔들림을 섞어, 경쟁하는 클라이언트들이 서로 다른 시점에 재시도하게 흩어준다.
+const MUTATE_RETRY_BASE_MS = 80;
+const MUTATE_RETRY_MAX_MS = 1200;
+const mutateRetryDelay = (attempt) => {
+  const grow = Math.min(MUTATE_RETRY_BASE_MS * 2 ** (attempt - 1), MUTATE_RETRY_MAX_MS);
+  return Math.round(grow * (0.5 + Math.random())); // 0.5~1.5배 지터
+};
+
 // 이전 버전에서 저장된 보드를 열어도 깨지지 않도록 보정한다.
 // 특히 구버전의 별도 problems 배열을 note.isProblem + votes 재키잉으로 마이그레이션한다.
 function normalizeBoard(raw) {
@@ -1251,7 +1263,7 @@ export default function FacilitationBoard() {
   boardRef.current = board;
   // 드래그 중이거나 포스트잇을 편집 중일 때는 2초 폴링이 로컬 변경을 덮어쓰지 않도록 잠시 멈춘다
   const suspendPollRef = useRef(false);
-  // 회의록 저장(loadBoard+saveBoard) 도중에는 "서버 값 동기화" effect가 옛 board.minutes로
+  // 회의록 저장(mutateBoard) 도중에는 "서버 값 동기화" effect가 옛 board.minutes로
   // minutesRef를 덮어쓰지 않도록 막는다. stopRecognition()의 setMicRecording(false)가 저장 완료
   // 전에 리렌더를 일으켜 그 effect를 먼저 실행시키는 경합(race)이 있었다 — 이 플래그로 막는다.
   const minutesSyncSuspendRef = useRef(false);
@@ -1265,6 +1277,10 @@ export default function FacilitationBoard() {
   // 폴링으로 마지막에 반영한 보드 원본(JSON 문자열). 값이 그대로면 setBoard를 건너뛰어
   // 2초마다 전체 트리가 불필요하게 리렌더/리플로우되는 버벅임을 없앤다.
   const lastBoardRawRef = useRef(null);
+  // 조건부 저장(CAS)의 기준값. "내가 마지막으로 본 서버 상태"의 updated_at이다.
+  const boardUpdatedAtRef = useRef(null);
+  // 보드 변경을 한 줄로 세우는 큐. 같은 사람의 변경끼리 겹쳐서 서로를 덮어쓰는 것을 막는다.
+  const mutationChainRef = useRef(Promise.resolve());
   // 자동 높이 textarea들을 추적한다. 인라인 ref(매 렌더마다 새 함수 → 매 렌더 리플로우) 대신
   // "마운트 때 1회 + 원격 변경 때만" 높이를 맞춰 입력/유휴 버벅임을 제거한다.
   const autoSizeEls = useRef(new Set());
@@ -1293,7 +1309,7 @@ export default function FacilitationBoard() {
     }
   }, []);
   // 새 포스트잇을 만들면 곧바로 타이핑할 수 있게 커서를 놓는다.
-  // 예전에는 textarea에 autoFocus를 걸어 뒀지만, justCreatedId는 saveBoard(=setBoard로 포스트잇이
+  // 예전에는 textarea에 autoFocus를 걸어 뒀지만, justCreatedId는 저장(=setBoard로 포스트잇이
   // 이미 마운트된) 다음에 세팅돼서 마운트 시점엔 항상 false였다 — autoFocus는 마운트할 때만 동작하므로
   // 실제로는 한 번도 먹지 않았다. 그래서 "+ 포스트잇"을 누른 뒤 바로 입력하면 포커스가 아무 곳에도
   // 없어서 타이핑이 통째로 사라졌다(저장된 포스트잇이 모두 빈 내용이던 원인).
@@ -1326,9 +1342,64 @@ export default function FacilitationBoard() {
     }
   }, [user]);
 
+  // 공유 링크로 참여한 프로젝트 목록(내가 소유한 것이 아니라 "참여만 한" 것).
+  // null = 아직 조회 전. project_members 테이블이 아직 없으면(schema.sql 미실행) 빈 배열로 둬서
+  // 목록 화면 자체는 그대로 동작하게 한다 — 이 기능만 조용히 비활성된 것처럼 보인다.
+  const [joinedProjects, setJoinedProjects] = useState(null);
+  const loadJoinedProjects = useCallback(async () => {
+    if (!user?.id) {
+      setJoinedProjects([]);
+      return;
+    }
+    try {
+      // RLS가 본인 것만 돌려주므로 user_id 조건을 따로 걸지 않아도 된다.
+      const { data: rows, error } = await supabase
+        .from("project_members")
+        .select("project_id, last_opened_at")
+        .order("last_opened_at", { ascending: false });
+      if (error) throw error;
+      const ids = (rows || []).map((r) => r.project_id);
+      if (ids.length === 0) {
+        setJoinedProjects([]);
+        return;
+      }
+      const { data: projs, error: projErr } = await supabase.from("projects").select("*").in("id", ids);
+      if (projErr) throw projErr;
+      // 최근 열어본 순서를 유지한다(projects 쿼리는 그 순서를 보장하지 않는다).
+      const rank = new Map(ids.map((id, i) => [id, i]));
+      setJoinedProjects((projs || []).map(fromDbProject).sort((a, b) => rank.get(a.id) - rank.get(b.id)));
+    } catch (e) {
+      console.error("참여 중인 프로젝트 조회 실패", e);
+      setJoinedProjects([]);
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     loadProjects();
-  }, [loadProjects]);
+    loadJoinedProjects();
+  }, [loadProjects, loadJoinedProjects]);
+
+  // 프로젝트를 열면 참여 기록을 남긴다(오너 포함 — last_opened_at이 "최근 열어본 순" 정렬에 쓰인다).
+  // 이 기록이 없으면 게스트는 목록에서 그 프로젝트를 다시 찾을 수 없다.
+  const recordedMembershipRef = useRef(new Set());
+  useEffect(() => {
+    if (!user?.id || !selectedProject) return;
+    const key = `${selectedProject.id}:${user.id}`;
+    if (recordedMembershipRef.current.has(key)) return;
+    recordedMembershipRef.current.add(key);
+    (async () => {
+      const { error } = await supabase
+        .from("project_members")
+        .upsert(
+          { project_id: selectedProject.id, user_id: user.id, last_opened_at: new Date().toISOString() },
+          { onConflict: "project_id,user_id" }
+        );
+      if (error) {
+        recordedMembershipRef.current.delete(key); // 다음 진입에서 다시 시도할 수 있게 되돌린다
+        console.error("참여 기록 실패", error);
+      }
+    })();
+  }, [user?.id, selectedProject?.id]);
 
   // 공유 링크(?p=id)로 들어온 경우 목록 화면을 거치지 않고 그 프로젝트를 바로 연다.
   // maybeSingle()은 행이 없어도 error 없이 data=null만 반환하므로, "아직 조회 중"과 "그런 프로젝트가
@@ -1381,7 +1452,13 @@ export default function FacilitationBoard() {
       console.error("프로젝트 생성 실패", error);
       return;
     }
-    await storage.set(boardKeyOf(id), JSON.stringify(emptyBoard()), true);
+    // 빈 보드 생성은 아직 아무도 접근하지 않은 키라 경합이 없어 조건 없이 쓴다.
+    // 실패해도 프로젝트 진입은 막지 않는다(보드는 첫 변경 때 insert로 만들어진다).
+    try {
+      await storage.set(boardKeyOf(id), JSON.stringify(emptyBoard()));
+    } catch (e) {
+      console.error("빈 보드 생성 실패", e);
+    }
     setNewProjectTitle("");
     setNewProjectGoal("");
     setSelectedProject(fromDbProject(row));
@@ -1421,7 +1498,7 @@ export default function FacilitationBoard() {
       console.error("삭제 실패", error);
       return;
     }
-    await storage.delete(boardKeyOf(id), true).catch(() => {});
+    await storage.delete(boardKeyOf(id)).catch(() => {}); // 보드 행이 남아도 프로젝트 삭제는 성립한다
     setProjects((prev) => (prev || []).filter((p) => p.id !== id));
   };
 
@@ -1434,34 +1511,47 @@ export default function FacilitationBoard() {
     setProjectDeleted(false);
     setSharedProjectNotFound(false);
     // 공유 링크(?p=)로 들어온 뒤 "내 프로젝트"로 돌아가는 경우: 이 값이 남아있으면 shared-link
-    // effect가 방금 나온 프로젝트로 다시 데려간다. 목록 화면으로 확실히 돌아가도록 지운다.
-    if (sharedProjectId) {
-      setSharedProjectId(null);
-      const url = new URL(window.location.href);
-      url.searchParams.delete("p");
-      window.history.replaceState({}, "", url);
-    }
+    // effect가 방금 나온 프로젝트로 다시 데려간다. 그래서 상태만 비워 목록 화면에 머무르게 한다.
+    // 단, URL의 ?p=는 그대로 남겨둔다 — 예전에는 이걸 지워버려서, 게스트가 이 버튼을 한 번 누르면
+    // 새로고침해도 못 돌아가고 원본 링크를 다시 찾아야 했다(진입로가 파괴됨).
+    // 이제 새로고침하면 그 프로젝트로 다시 들어갈 수 있고, 아래 "참여 중인 프로젝트" 목록도 함께 남는다.
+    if (sharedProjectId) setSharedProjectId(null);
+    // 방금 참여한 프로젝트가 목록에 바로 보이도록 다시 읽는다(참여 기록은 진입할 때 남는다).
+    loadProjects();
+    loadJoinedProjects();
   };
 
   // 저장소에서 현재 프로젝트의 보드 상태를 읽어옴
+  // 서버 최신값을 읽어 화면 상태와 조건부 저장 기준값(updated_at)을 맞추고, "방금 읽은 보드"를 반환한다.
+  // 반환값을 쓰는 게 핵심이다: 예전에는 각 변경 함수가 loadBoard() 뒤에 boardRef.current를 읽었는데,
+  // boardRef.current는 렌더 중에 갱신되므로 그 시점엔 아직 "로드 이전" 스냅샷이었다. 즉 최신 데이터를
+  // 받아와서 그대로 버리고 낡은 값을 저장해, 다른 참여자가 방금 만든 포스트잇을 통째로 지웠다.
+  // 실패는 던진다 — 폴링은 조용히 무시하고(loadBoard), 변경 경로는 재시도/중단을 판단해야 하기 때문.
+  const readBoardFresh = useCallback(async () => {
+    if (!selectedProject) return null;
+    const res = await storage.get(boardKeyOf(selectedProject.id));
+    if (!res || !res.value) return null; // 확인된 부재(아직 행이 없음)
+    boardUpdatedAtRef.current = res.updatedAt;
+    const next = normalizeBoard(JSON.parse(res.value));
+    // 값이 지난번과 동일하면(내가 방금 저장한 값 포함) 리렌더를 건너뛴다 -> 유휴 시 버벅임 제거
+    if (res.value !== lastBoardRawRef.current) {
+      lastBoardRawRef.current = res.value;
+      setBoard(next);
+      // 원격 변경이 반영됐을 때만 페인트 후 자동높이 textarea를 다시 맞춘다(입력 중에는 실행 안 됨)
+      requestAnimationFrame(() => refitAutoSize());
+    }
+    return next;
+  }, [selectedProject, refitAutoSize]);
+
+  // 폴링·초기 로드용. 실패해도 다음 폴링에서 다시 시도하면 되므로 조용히 넘어간다.
   const loadBoard = useCallback(async () => {
-    if (!selectedProject) return;
     try {
-      const res = await storage.get(boardKeyOf(selectedProject.id), true);
-      if (res && res.value) {
-        // 값이 지난번과 동일하면(내가 방금 저장한 값 포함) 리렌더를 건너뛴다 -> 유휴 시 버벅임 제거
-        if (res.value !== lastBoardRawRef.current) {
-          lastBoardRawRef.current = res.value;
-          setBoard(normalizeBoard(JSON.parse(res.value)));
-          // 원격 변경이 반영됐을 때만 페인트 후 자동높이 textarea를 다시 맞춘다(입력 중에는 실행 안 됨)
-          requestAnimationFrame(() => refitAutoSize());
-        }
-      }
+      await readBoardFresh();
     } catch (e) {
-      // key not created yet
+      /* 네트워크 등 일시적 실패 — 다음 폴링에서 재시도 */
     }
     setLoaded(true);
-  }, [selectedProject, refitAutoSize]);
+  }, [readBoardFresh]);
 
   // selectedProject(projects 테이블 행)는 board와 달리 지금까지 폴링 대상이 아니었다.
   // title/goal/pinned는 원래도 그랬지만, 이번에 instructions·votesPerUser까지 여기로 옮기면서
@@ -1494,22 +1584,76 @@ export default function FacilitationBoard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDeleted]);
 
-  // 보드 상태를 통째로 저장. 여러 하위 키로 쪼개면 동시 수정 시 last-write-wins로 유실될 위험이 커서
-  // 하나의 키 안에서 전체 객체를 갱신하는 방식을 쓴다
-  const saveBoard = useCallback(
-    async (next) => {
-      if (!selectedProject) return;
-      setBoard(next);
-      try {
-        const str = JSON.stringify(next);
-        // 방금 저장한 값을 기억해, 다음 폴링이 같은 값을 읽어와도 리렌더하지 않게 한다
-        lastBoardRawRef.current = str;
-        await storage.set(boardKeyOf(selectedProject.id), str, true);
-      } catch (e) {
-        console.error("저장 실패", e);
-      }
+  // 저장이 끝까지 실패한 경우에만 알린다. 예전에는 storage.set이 Supabase 에러를 무시해서
+  // 저장 실패가 화면상 성공처럼 보였다(무음 유실).
+  const notifySaveFailed = useCallback(() => {
+    setConfirmState({
+      title: "저장하지 못했습니다",
+      message:
+        "다른 참여자의 변경과 계속 겹치거나 네트워크가 불안정해 방금 변경을 저장하지 못했습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+      confirmLabel: "확인",
+      onConfirm: () => setConfirmState(null),
+    });
+  }, []);
+
+  // ===== 보드 변경의 유일한 경로 =====
+  // mutator(current) -> next 형태의 함수를 받는다. current는 "그 순간 서버의 최신 보드"이고,
+  // null을 돌려주면 변경 없음으로 본다.
+  //
+  // 동시 편집 대응 두 겹:
+  //  1) 직렬 큐 — 같은 사람의 변경끼리 겹치지 않게 한 줄로 세운다(blur 저장 직후 클릭 저장 등).
+  //  2) 조건부 저장(CAS) — 읽었을 때의 updated_at이 그대로일 때만 쓴다. 그사이 다른 참여자가
+  //     저장했으면 충돌로 돌아오고, 최신값을 다시 읽어 mutator를 "다시 적용"한다.
+  //     낡은 스냅샷을 덮어쓰지 않으므로 상대의 변경이 사라지지 않는다.
+  const mutateBoard = useCallback(
+    (mutator) => {
+      const run = async () => {
+        if (!selectedProject) return;
+        for (let attempt = 1; attempt <= MUTATE_MAX_TRIES; attempt++) {
+          let base;
+          try {
+            base = await readBoardFresh();
+          } catch (e) {
+            console.error("보드 읽기 실패", e);
+            if (attempt === MUTATE_MAX_TRIES) return notifySaveFailed();
+            // 읽기 실패 시 절대 쓰지 않는다(낡은 값으로 덮어쓰는 사고 방지)
+            await new Promise((r) => setTimeout(r, mutateRetryDelay(attempt)));
+            continue;
+          }
+          // 행이 아직 없는 신규 보드는 화면의 현재 상태를 기준으로 삼는다(이때 CAS는 insert가 된다)
+          if (!base) base = boardRef.current;
+          const next = mutator(base);
+          if (!next) return;
+          setBoard(next); // 낙관적 반영: 화면은 즉시 갱신하고 저장은 뒤따른다
+          const str = JSON.stringify(next);
+          let res;
+          try {
+            res = await storage.setIfUnchanged(boardKeyOf(selectedProject.id), str, boardUpdatedAtRef.current);
+          } catch (e) {
+            console.error("보드 저장 실패", e);
+            if (attempt === MUTATE_MAX_TRIES) return notifySaveFailed();
+            await new Promise((r) => setTimeout(r, mutateRetryDelay(attempt)));
+            continue;
+          }
+          if (res.ok) {
+            // 방금 저장한 값을 기억해, 다음 폴링이 같은 값을 읽어와도 리렌더하지 않게 한다
+            lastBoardRawRef.current = str;
+            boardUpdatedAtRef.current = res.updatedAt;
+            return;
+          }
+          // 충돌 = 다른 참여자가 먼저 저장했다 -> 잠깐 흩어졌다가 최신값에 다시 적용
+          if (attempt < MUTATE_MAX_TRIES) {
+            await new Promise((r) => setTimeout(r, mutateRetryDelay(attempt)));
+          }
+        }
+        notifySaveFailed();
+      };
+      // 앞선 변경이 끝난 뒤에 실행한다(실패해도 큐가 멈추지 않게 then의 양쪽에 같은 실행자를 건다)
+      const chained = mutationChainRef.current.then(run, run);
+      mutationChainRef.current = chained;
+      return chained;
     },
-    [selectedProject]
+    [selectedProject, readBoardFresh, notifySaveFailed]
   );
 
   useEffect(() => {
@@ -1531,12 +1675,13 @@ export default function FacilitationBoard() {
   // 이미 이 프로�트에 등록돼 있으면(재방문) 아무것도 안 하고 건너뛴다.
   const joinBoard = useCallback(async () => {
     if (!name || !selectedProject) return;
-    await loadBoard();
-    const current = boardRef.current;
-    if (current.users[name]) return; // 이미 등록됨(색상 유지)
-    const color = pickColor(current.users);
-    await saveBoard({ ...current, users: { ...current.users, [name]: { color } } });
-  }, [name, selectedProject, loadBoard, saveBoard]);
+    // 여러 명이 링크를 동시에 열면 예전에는 마지막 한 명만 등록되고 나머지는 색상도 못 받았다.
+    // 이제 각자 최신 users 위에 자기 자신만 얹으므로 전원이 남는다.
+    await mutateBoard((current) => {
+      if (current.users[name]) return null; // 이미 등록됨(색상 유지)
+      return { ...current, users: { ...current.users, [name]: { color: pickColor(current.users) } } };
+    });
+  }, [name, selectedProject, mutateBoard]);
 
   useEffect(() => {
     joinBoard();
@@ -1549,39 +1694,41 @@ export default function FacilitationBoard() {
   // "추가하면 하단에 생기는" 순서가 자연스럽게 보장된다 (별도 좌표 계산이 필요 없음)
   const createBlankNote = async (topicId) => {
     if (!name) return;
-    await loadBoard();
-    const current = boardRef.current;
+    // id를 먼저 정해두는 이유: 저장이 충돌해 재시도돼도 같은 포스트잇 하나만 추가되고,
+    // 저장 성공 후 이 id로 커서를 놓을 수 있어야 한다.
     const note = { id: uid(), text: "", authors: [name], topicId, isProblem: false, isParked: false };
-    await saveBoard({ ...current, notes: [...current.notes, note] });
+    await mutateBoard((current) => ({ ...current, notes: [...current.notes, note] }));
     setJustCreatedId(note.id);
   };
 
   // 새 의견 보드(주제) 추가
   const addTopic = async () => {
-    await loadBoard();
-    const current = boardRef.current;
-    const topic = { id: uid(), title: `의견${current.topics.length + 1}` };
-    await saveBoard({ ...current, topics: [...current.topics, topic] });
+    // 제목 번호는 최신 상태 기준으로 매겨야 한다(동시에 추가되면 "의견2"가 둘 생기지 않게)
+    await mutateBoard((current) => ({
+      ...current,
+      topics: [...current.topics, { id: uid(), title: `의견${current.topics.length + 1}` }],
+    }));
   };
 
   const renameTopic = async (id, title) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, topics: current.topics.map((t) => (t.id === id ? { ...t, title } : t)) });
+    await mutateBoard((current) => ({
+      ...current,
+      topics: current.topics.map((t) => (t.id === id ? { ...t, title } : t)),
+    }));
   };
 
   // 3번: 의견 보드 삭제. 빈 보드는 바로 삭제, 포스트잇이 있으면 확인 팝업을 거친다.
   const deleteTopic = async (topicId) => {
-    await loadBoard();
-    const current = boardRef.current;
-    const removedIds = current.notes.filter((n) => n.topicId === topicId).map((n) => n.id);
-    const votes = { ...current.votes };
-    removedIds.forEach((id) => delete votes[id]);
-    await saveBoard({
-      ...current,
-      topics: current.topics.filter((t) => t.id !== topicId),
-      notes: current.notes.filter((n) => n.topicId !== topicId),
-      votes,
+    await mutateBoard((current) => {
+      const removedIds = current.notes.filter((n) => n.topicId === topicId).map((n) => n.id);
+      const votes = { ...current.votes };
+      removedIds.forEach((id) => delete votes[id]);
+      return {
+        ...current,
+        topics: current.topics.filter((t) => t.id !== topicId),
+        notes: current.notes.filter((n) => n.topicId !== topicId),
+        votes,
+      };
     });
   };
 
@@ -1624,43 +1771,41 @@ export default function FacilitationBoard() {
   };
   // blur 시 최신 원격 상태 위에 내 KPT 텍스트만 반영해 저장(done 등 다른 필드는 원격값 유지).
   const commitRetro = async (owner) => {
+    // 내가 입력한 값은 큐에 넣기 전에(=지금) 붙잡아 둔다. 큐가 실행될 때 읽으면 그사이 폴링이
+    // board를 갈아끼워 빈 값이 저장될 수 있다.
     const mine = boardRef.current.retros?.[owner] || {};
-    await loadBoard();
-    const current = boardRef.current;
-    const existing = current.retros?.[owner] || {};
-    await saveBoard({
-      ...current,
-      retros: {
-        ...current.retros,
-        [owner]: { ...existing, keep: mine.keep || "", problem: mine.problem || "", try: mine.try || "" },
-      },
+    await mutateBoard((current) => {
+      const existing = current.retros?.[owner] || {};
+      return {
+        ...current,
+        retros: {
+          ...current.retros,
+          [owner]: { ...existing, keep: mine.keep || "", problem: mine.problem || "", try: mine.try || "" },
+        },
+      };
     });
   };
   // 개인 단위 완료 토글. 완료해도 잠그지 않으며, 완료된 사람 KPT만 문서에 누적된다.
   const toggleRetroDone = async (owner) => {
-    await loadBoard();
-    const current = boardRef.current;
-    const existing = current.retros?.[owner] || {};
-    await saveBoard({ ...current, retros: { ...current.retros, [owner]: { ...existing, done: !existing.done } } });
+    await mutateBoard((current) => {
+      const existing = current.retros?.[owner] || {};
+      return { ...current, retros: { ...current.retros, [owner]: { ...existing, done: !existing.done } } };
+    });
   };
   // 우선순위 문제별 해결여부 선택 (누구나 변경 가능)
   const setPriorityResolution = async (noteId, value) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, priorityResolution: { ...current.priorityResolution, [noteId]: value } });
+    await mutateBoard((current) => ({
+      ...current,
+      priorityResolution: { ...current.priorityResolution, [noteId]: value },
+    }));
   };
   // 회고 탭 상단 "우선순위 해결여부" 섹션 표시 토글 (누구나 켜고 끌 수 있음)
   const toggleRetroPriorityCheck = async () => {
-    await loadBoard();
-    const current = boardRef.current;
-    const on = current.retroPriorityCheck !== false;
-    await saveBoard({ ...current, retroPriorityCheck: !on });
+    await mutateBoard((current) => ({ ...current, retroPriorityCheck: current.retroPriorityCheck === false }));
   };
   // 문서 표준 필드(목적/배경/추진 방향/기대 효과) 저장. 안내 문구 편집과 동일 패턴(blur 시 저장).
   const updateDocField = async (field, value) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, docFields: { ...(current.docFields || {}), [field]: value } });
+    await mutateBoard((current) => ({ ...current, docFields: { ...(current.docFields || {}), [field]: value } }));
   };
 
   // ===== 문서 스냅샷(버전 고정) =====
@@ -1679,17 +1824,18 @@ export default function FacilitationBoard() {
       // JSON 왕복으로 깊은 복사 — 이후 board가 바뀌어도 이 안의 값은 영향받지 않아야 한다.
       model: JSON.parse(JSON.stringify(model)),
     };
-    await loadBoard();
-    const current = boardRef.current;
-    // 오래된 것부터 자동 정리: 시간순 정렬 후 최근 MAX_SNAPSHOTS개만 남긴다.
-    const next = [...(current.snapshots || []), snapshot].sort((a, b) => a.at - b.at).slice(-MAX_SNAPSHOTS);
-    await saveBoard({ ...current, snapshots: next });
+    await mutateBoard((current) => ({
+      ...current,
+      // 오래된 것부터 자동 정리: 시간순 정렬 후 최근 MAX_SNAPSHOTS개만 남긴다.
+      snapshots: [...(current.snapshots || []), snapshot].sort((a, b) => a.at - b.at).slice(-MAX_SNAPSHOTS),
+    }));
   };
 
   const deleteSnapshot = async (id) => {
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, snapshots: (current.snapshots || []).filter((s) => s.id !== id) });
+    await mutateBoard((current) => ({
+      ...current,
+      snapshots: (current.snapshots || []).filter((s) => s.id !== id),
+    }));
   };
 
   // 회의 녹취록 직접 수정(문서 탭). 음성 인식이 잘못 옮긴 부분을 손으로 고칠 수 있게 문서 표준 필드와
@@ -1698,9 +1844,7 @@ export default function FacilitationBoard() {
   const updateMinutes = async (value) => {
     minutesRef.current = value;
     setMinutes(value);
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, minutes: value });
+    await mutateBoard((current) => ({ ...current, minutes: value }));
   };
 
   // 포스트잇 내용을 타이핑하는 동안은 로컬 상태만 갱신 (폴링에 의해 지워지지 않도록)
@@ -1713,12 +1857,12 @@ export default function FacilitationBoard() {
 
   // 편집을 마치고 포커스를 벗어날 때(blur) 최신 원격 상태 위에 내 텍스트만 반영해 저장
   const commitNoteText = async (id) => {
+    // 내가 입력한 텍스트는 큐에 넣기 전에 붙잡아 둔다(큐 실행 시점엔 board가 이미 갈렸을 수 있다).
     const myText = boardRef.current.notes.find((n) => n.id === id)?.text ?? "";
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({
-      ...current,
-      notes: current.notes.map((n) => (n.id === id ? { ...n, text: myText } : n)),
+    await mutateBoard((current) => {
+      // 그사이 다른 참여자가 이 포스트잇을 지웠다면 되살리지 않는다.
+      if (!current.notes.some((n) => n.id === id)) return null;
+      return { ...current, notes: current.notes.map((n) => (n.id === id ? { ...n, text: myText } : n)) };
     });
   };
 
@@ -1733,11 +1877,9 @@ export default function FacilitationBoard() {
   // 설명 편집을 마칠 때 저장
   const commitNoteDescription = async (id) => {
     const myDescription = boardRef.current.notes.find((n) => n.id === id)?.description ?? "";
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({
-      ...current,
-      notes: current.notes.map((n) => (n.id === id ? { ...n, description: myDescription } : n)),
+    await mutateBoard((current) => {
+      if (!current.notes.some((n) => n.id === id)) return null; // 그사이 삭제됐으면 되살리지 않는다
+      return { ...current, notes: current.notes.map((n) => (n.id === id ? { ...n, description: myDescription } : n)) };
     });
   };
 
@@ -1755,40 +1897,36 @@ export default function FacilitationBoard() {
 
   const mergeSelected = async () => {
     if (selected.length < 2) return;
-    await loadBoard();
-    const current = boardRef.current;
-    const chosen = current.notes.filter((n) => selected.includes(n.id));
-    // 선택 후 실제 병합 실행 사이(loadBoard로 다시 읽어오는 그 순간)에 다른 참여자가 선택된 것 중
-    // 일부를 지웠을 수 있다. chosen은 이미 "그 시점에 실제로 존재하는 것"만 남은 상태라 살아남은
-    // 것끼리는 그대로 병합을 진행하면 되고, 2개 미만으로 줄었을 때만(병합 자체가 의미 없음) 조용히
-    // 취소한다 — 전에는 이 경우 chosen[0]이 undefined라 바로 아래에서 크래시했다.
-    if (chosen.length < 2) {
-      setSelected([]);
-      setMergeMode(false);
-      return;
-    }
-    const rest = current.notes.filter((n) => !selected.includes(n.id));
-    const votes = { ...current.votes };
-    selected.forEach((id) => delete votes[id]); // 병합되어 사라지는 노트의 표는 정리
-    const merged = {
-      id: uid(),
-      text: chosen.map((n) => n.text).join(" / "),
-      authors: [...new Set(chosen.flatMap((n) => n.authors))],
-      topicId: chosen[0].topicId,
-      isProblem: false,
-      isParked: false,
-    };
-    await saveBoard({ ...current, notes: [...rest, merged], votes });
+    const mergedId = uid(); // 재시도돼도 같은 결과 노트 하나만 생기도록 id를 미리 정한다
+    await mutateBoard((current) => {
+      const chosen = current.notes.filter((n) => selected.includes(n.id));
+      // 선택 후 실제 병합 실행 사이에 다른 참여자가 선택된 것 중 일부를 지웠을 수 있다. chosen은 이미
+      // "그 시점에 실제로 존재하는 것"만 남은 상태라 살아남은 것끼리 병합하면 되고, 2개 미만으로
+      // 줄었을 때만(병합 자체가 의미 없음) 조용히 취소한다 — 전에는 chosen[0]이 undefined라 크래시했다.
+      if (chosen.length < 2) return null;
+      const rest = current.notes.filter((n) => !selected.includes(n.id));
+      const votes = { ...current.votes };
+      selected.forEach((id) => delete votes[id]); // 병합되어 사라지는 노트의 표는 정리
+      const merged = {
+        id: mergedId,
+        text: chosen.map((n) => n.text).join(" / "),
+        authors: [...new Set(chosen.flatMap((n) => n.authors))],
+        topicId: chosen[0].topicId,
+        isProblem: false,
+        isParked: false,
+      };
+      return { ...current, notes: [...rest, merged], votes };
+    });
     setSelected([]);
     setMergeMode(false);
   };
 
   const deleteNote = async (id) => {
-    await loadBoard();
-    const current = boardRef.current;
-    const votes = { ...current.votes };
-    delete votes[id];
-    await saveBoard({ ...current, notes: current.notes.filter((n) => n.id !== id), votes });
+    await mutateBoard((current) => {
+      const votes = { ...current.votes };
+      delete votes[id];
+      return { ...current, notes: current.notes.filter((n) => n.id !== id), votes };
+    });
   };
 
   // 6번: "문제로" 토글. 노트 자체에 isProblem을 표시(복제 없음). 해제 시 그 노트의 표는 정리.
@@ -1796,20 +1934,21 @@ export default function FacilitationBoard() {
   // problemMarkedAt: "문제로 표시된 시점" — 우선순위 결과/문제 정리 탭의 동점 2차 정렬 기준으로 쓰인다.
   // 해제할 때 비워서, 나중에 다시 문제로 표시하면 그 순간을 새 기준 시점으로 삼는다.
   const toggleProblem = async (noteId) => {
-    await loadBoard();
-    const current = boardRef.current;
-    const target = current.notes.find((n) => n.id === noteId);
-    const willBeProblem = !target?.isProblem;
-    const votes = { ...current.votes };
-    if (!willBeProblem) delete votes[noteId];
-    await saveBoard({
-      ...current,
-      notes: current.notes.map((n) =>
-        n.id === noteId
-          ? { ...n, isProblem: willBeProblem, isParked: willBeProblem ? false : n.isParked, problemMarkedAt: willBeProblem ? Date.now() : undefined }
-          : n
-      ),
-      votes,
+    await mutateBoard((current) => {
+      const target = current.notes.find((n) => n.id === noteId);
+      if (!target) return null; // 그사이 삭제됨
+      const willBeProblem = !target.isProblem;
+      const votes = { ...current.votes };
+      if (!willBeProblem) delete votes[noteId];
+      return {
+        ...current,
+        notes: current.notes.map((n) =>
+          n.id === noteId
+            ? { ...n, isProblem: willBeProblem, isParked: willBeProblem ? false : n.isParked, problemMarkedAt: willBeProblem ? Date.now() : undefined }
+            : n
+        ),
+        votes,
+      };
     });
   };
 
@@ -1817,18 +1956,19 @@ export default function FacilitationBoard() {
   // 원래 의견 보드 자리에는 그대로 남고 보류함 목록에도 함께 나타난다(표시만 두 곳).
   // 문제 상태와는 동시에 될 수 없으므로, 보류로 표시하면 문제 상태와 표는 함께 정리한다.
   const toggleParked = async (noteId) => {
-    await loadBoard();
-    const current = boardRef.current;
-    const target = current.notes.find((n) => n.id === noteId);
-    const willBeParked = !target?.isParked;
-    const votes = { ...current.votes };
-    if (willBeParked) delete votes[noteId];
-    await saveBoard({
-      ...current,
-      notes: current.notes.map((n) =>
-        n.id === noteId ? { ...n, isParked: willBeParked, isProblem: willBeParked ? false : n.isProblem } : n
-      ),
-      votes,
+    await mutateBoard((current) => {
+      const target = current.notes.find((n) => n.id === noteId);
+      if (!target) return null; // 그사이 삭제됨
+      const willBeParked = !target.isParked;
+      const votes = { ...current.votes };
+      if (willBeParked) delete votes[noteId];
+      return {
+        ...current,
+        notes: current.notes.map((n) =>
+          n.id === noteId ? { ...n, isParked: willBeParked, isProblem: willBeParked ? false : n.isProblem } : n
+        ),
+        votes,
+      };
     });
   };
 
@@ -1845,18 +1985,20 @@ export default function FacilitationBoard() {
   // 전체 투표권(votesPerUser) 소진 시 새 항목에 투표 불가. 이제 note.id 기준.
   const toggleVote = async (noteId) => {
     if (!name) return;
-    await loadBoard();
-    const current = boardRef.current;
-    const votersNow = current.votes[noteId] || [];
-    const already = votersNow.includes(name);
-    let nextVoters;
-    if (already) {
-      nextVoters = votersNow.filter((v) => v !== name);
-    } else {
-      if (myVoteCount(current) >= current.votesPerUser) return;
-      nextVoters = [...votersNow, name];
-    }
-    await saveBoard({ ...current, votes: { ...current.votes, [noteId]: nextVoters } });
+    // 투표권 한도는 최신 상태 기준으로 판정해야 한다. 예전에는 낡은 스냅샷으로 세서 한도를
+    // 넘겨 투표되거나, 남의 표를 지운 값으로 덮어쓰는 일이 생겼다.
+    await mutateBoard((current) => {
+      const votersNow = current.votes[noteId] || [];
+      const already = votersNow.includes(name);
+      let nextVoters;
+      if (already) {
+        nextVoters = votersNow.filter((v) => v !== name);
+      } else {
+        if (myVoteCount(current) >= (selectedProject?.votesPerUser ?? 3)) return null;
+        nextVoters = [...votersNow, name];
+      }
+      return { ...current, votes: { ...current.votes, [noteId]: nextVoters } };
+    });
   };
 
   // 1인당 투표권도 STEP 안내 배너와 같은 이유로 projects 테이블 컬럼(votes_per_user)에 저장한다.
@@ -2138,19 +2280,19 @@ export default function FacilitationBoard() {
   // 녹취록(minutes)도 같이 저장해, 녹음 중 브라우저가 죽어도 마지막 하트비트까지는 남게 한다.
   useEffect(() => {
     if (!micRecording) return;
-    const iv = setInterval(async () => {
-      await loadBoard();
-      const current = boardRef.current;
-      await saveBoard({
+    const iv = setInterval(() => {
+      // 하트비트는 10초마다 보드 전체를 저장하므로, 예전 구조에서는 이것만으로도 다른 참여자가
+      // 그 사이에 만든 포스트잇을 지워버릴 수 있었다. 이제 최신 상태 위에 녹음 필드만 얹는다.
+      mutateBoard((current) => ({
         ...current,
         recording: true,
         recordingBy: name,
         recordingAt: Date.now(),
         minutes: minutesRef.current,
-      });
+      }));
     }, RECORDING_HEARTBEAT_MS);
     return () => clearInterval(iv);
-  }, [micRecording, name, loadBoard, saveBoard]);
+  }, [micRecording, name, mutateBoard]);
 
   // 만료 판정은 Date.now()에 의존하는데, 녹음자가 사라지면 서버 값이 더 이상 안 바뀌어서
   // 폴링만으로는 리렌더가 일어나지 않는다(loadBoard는 값이 같으면 setBoard를 건너뛴다).
@@ -2166,15 +2308,13 @@ export default function FacilitationBoard() {
   // 화면에서만 무시하고 두면 board.recording이 계속 true로 남아 "녹음 중" 배지가 사라지지 않는다.
   useEffect(() => {
     if (!recordingStale || micRecording) return;
-    (async () => {
-      await loadBoard();
-      const current = boardRef.current;
-      if (!current.recording) return; // 그사이 누가 이미 정리했으면 건너뛴다
+    mutateBoard((current) => {
+      if (!current.recording) return null; // 그사이 누가 이미 정리했으면 건너뛴다
       // 다시 읽어온 값이 살아있는 하트비트면(그사이 누가 녹음을 시작했다면) 건드리지 않는다
-      if (current.recordingAt && Date.now() - current.recordingAt <= RECORDING_STALE_MS) return;
-      await saveBoard({ ...current, recording: false, recordingBy: "", recordingAt: 0 });
-    })();
-  }, [recordingStale, micRecording, loadBoard, saveBoard]);
+      if (current.recordingAt && Date.now() - current.recordingAt <= RECORDING_STALE_MS) return null;
+      return { ...current, recording: false, recordingBy: "", recordingAt: 0 };
+    });
+  }, [recordingStale, micRecording, mutateBoard]);
 
   // 녹음을 멈추고 공유 상태를 정리한다. 일시정지와 종료는 "다음에 이어서 녹음할 생각인지"만 다르고
   // (closed 플래그) 나머지 동작(인식 정지, 녹취록 저장, 점유 해제)은 완전히 같다.
@@ -2184,16 +2324,14 @@ export default function FacilitationBoard() {
     minutesSyncSuspendRef.current = true;
     stopRecognition();
     teardownTabAudioCapture(); // 탭 오디오를 쓴 적 없으면 아무 것도 하지 않는다
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({
+    await mutateBoard((current) => ({
       ...current,
       recording: false,
       recordingBy: "",
       recordingAt: 0,
       minutesClosed: closed,
       minutes: minutesRef.current,
-    });
+    }));
     minutesSyncSuspendRef.current = false;
   };
 
@@ -2258,9 +2396,7 @@ export default function FacilitationBoard() {
       setMinutesOpen(true); // 결과 확인·저장용 패널을 확실히 보여준다
 
       // 점유자(recordingBy)와 하트비트 시각을 심어 다른 참여자의 시작 버튼을 잠근다.
-      await loadBoard();
-      const current = boardRef.current;
-      await saveBoard({
+      await mutateBoard((current) => ({
         ...current,
         recording: true,
         recordingBy: name,
@@ -2268,7 +2404,7 @@ export default function FacilitationBoard() {
         minutesClosed: false, // 다시 녹음을 시작하면 마감 상태를 푼다
         minutes: minutesRef.current,
         recordingConsentAck: current.recordingConsentAck || wantsTabAudio,
-      });
+      }));
       minutesSyncSuspendRef.current = false;
     };
 
@@ -2322,9 +2458,7 @@ export default function FacilitationBoard() {
     minutesRef.current = "";
     setMinutes("");
     setMinutesInterim("");
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, minutes: "" });
+    await mutateBoard((current) => ({ ...current, minutes: "" }));
   };
 
   // 회의록 단순 정리(외부 API 없이 클라이언트에서만): 반복된 문장과 붙어서 중복된 단어를 걷어낸다.
@@ -2353,9 +2487,7 @@ export default function FacilitationBoard() {
     if (cleaned === raw) return; // 바뀐 게 없으면 저장 생략
     minutesRef.current = cleaned;
     setMinutes(cleaned);
-    await loadBoard();
-    const current = boardRef.current;
-    await saveBoard({ ...current, minutes: cleaned });
+    await mutateBoard((current) => ({ ...current, minutes: cleaned }));
   };
 
   // 회의록 녹음 중이 아닐 때는 board.minutes(공유 저장본)를 로컬 버퍼에 동기화한다.
@@ -2620,7 +2752,9 @@ export default function FacilitationBoard() {
           </div>
 
           {projects === null && <div style={{ color: "#a19c95", fontSize: 14 }}>불러오는 중...</div>}
-          {projects && projects.length === 0 && (
+          {/* 참여 중인 프로젝트가 있으면 "없습니다" 문구는 숨긴다 — 아래에 목록이 보이는데 위에서
+              없다고 말하면 서로 어긋나 보인다(내가 만든 게 없을 뿐, 참여한 회의는 있는 상태). */}
+          {projects && projects.length === 0 && (joinedProjects || []).filter((p) => !user || p.ownerId !== user.id).length === 0 && (
             <div style={{ color: "#a19c95", fontSize: 14, textAlign: "center", padding: "30px 0" }}>아직 생성된 프로젝트가 없습니다.</div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2710,6 +2844,73 @@ export default function FacilitationBoard() {
               ))}
             </AnimatePresence>
           </div>
+
+          {/* 공유 링크로 참여한 프로젝트. 프로젝트 목록은 owner_id 기준이라 리더가 만든 프로젝트는
+              위 목록에 절대 나타나지 않는다 — 그래서 게스트에게는 이 섹션이 유일한 재진입로다.
+              내가 소유한 것은 위에 이미 있으니 제외한다. 고정·삭제는 오너의 것이라 여기선 제공하지 않는다. */}
+          {(() => {
+            const joined = (joinedProjects || []).filter((p) => !user || p.ownerId !== user.id);
+            if (joined.length === 0) return null;
+            return (
+              <div style={{ marginTop: 34 }}>
+                <h2 style={{ fontSize: 17, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 4px" }}>참여 중인 프로젝트</h2>
+                <p style={{ fontSize: 13.5, color: "#8a857f", margin: "0 0 14px" }}>
+                  공유 링크로 참여한 회의입니다. 최근에 열어본 순서예요.
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {joined.map((p) => (
+                    <div
+                      key={p.id}
+                      style={{
+                        background: "#fff",
+                        border: "1px solid rgba(36,35,34,.09)",
+                        borderRadius: 14,
+                        padding: "18px 20px",
+                        boxShadow: "0 1px 3px rgba(0,0,0,.04)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 16,
+                      }}
+                    >
+                      <span
+                        title="공유 링크로 참여한 프로젝트"
+                        style={{ fontSize: 12, fontWeight: 700, color: "#4f3fd6", background: "#ece9fc", borderRadius: 999, padding: "4px 10px", flexShrink: 0, whiteSpace: "nowrap" }}
+                      >
+                        참여
+                      </span>
+                      <button
+                        onClick={() => setSelectedProject(p)}
+                        style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
+                        <div style={{ fontSize: 14, color: "#8a857f" }}>
+                          {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성{p.goal ? ` · ${p.goal}` : ""}
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => setSelectedProject(p)}
+                        style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        열기
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const url = `${window.location.origin}${window.location.pathname}?p=${p.id}`;
+                          await navigator.clipboard.writeText(url);
+                          setCopiedLinkId(p.id);
+                          setTimeout(() => setCopiedLinkId((cur) => (cur === p.id ? null : cur)), 1800);
+                        }}
+                        title="이 회의로 들어오는 링크 복사"
+                        style={{ background: copiedLinkId === p.id ? "#e6f7f1" : "#ffffff", border: `1px solid ${copiedLinkId === p.id ? "#a9e6d3" : "rgba(36,35,34,.1)"}`, borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: copiedLinkId === p.id ? "#1e7a4d" : "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        {copiedLinkId === p.id ? "✓ 복사됨" : "링크 복사"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
         <ConfirmDialog
           open={!!confirmState}

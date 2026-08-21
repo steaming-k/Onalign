@@ -234,3 +234,10 @@ create policy "project_members delete own" on public.project_members
 -- "내 참여 목록을 최근 열어본 순으로" 조회하는 게 유일한 사용 패턴이라 그에 맞춘 인덱스를 둔다.
 create index if not exists project_members_user_recent_idx
   on public.project_members (user_id, last_opened_at desc);
+
+-- ============================================================
+-- 닉네임(프로젝트별 표시 이름) — 지금까지는 참여 신원이 구글 계정 이름(displayNameOf)
+-- 고정이라 바꿀 방법이 없었다. 계정 전체가 아니라 "이 회의에서만" 다른 이름을 쓸 수 있게
+-- project_members에 프로젝트별 override를 둔다. null이면 기존과 동일하게 구글 이름을 쓴다.
+-- ============================================================
+alter table public.project_members add column if not exists display_name text;

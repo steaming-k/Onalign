@@ -87,8 +87,10 @@ const PROMPT_PRESETS = [
   },
 ];
 
-// 참여자 구분용 6색 파스텔. bg = 포스트잇/색상 점, tint = 참여자 배지의 옅은 배경,
+// 참여자 구분용 10색 파스텔. bg = 포스트잇/색상 점, tint = 참여자 배지의 옅은 배경,
 // text = 포스트잇 위 본문(따뜻한 차콜 통일), border = 색상 점 테두리/보더용.
+// 기존 6색(pink~teal) 사이 빈 색상환 구간(노랑·민트·코랄·모브)을 채워 10명 가까이 모여도
+// 색이 겹치거나 서로 헷갈리지 않도록 했다 — 톤·채도는 기존 6색과 같은 파스텔 톤을 맞췄다.
 const PALETTE = [
   { name: "pink", bg: "#f7d3de", tint: "#fdeef2", border: "#e9a8bd", text: "#242322" },
   { name: "blue", bg: "#bcd9ee", tint: "#e9f2fa", border: "#8fb9dd", text: "#242322" },
@@ -96,6 +98,10 @@ const PALETTE = [
   { name: "purple", bg: "#d6c9ee", tint: "#f0ebfa", border: "#b09fd9", text: "#242322" },
   { name: "tan", bg: "#eecd9c", tint: "#faf1e2", border: "#dcae6b", text: "#242322" },
   { name: "teal", bg: "#a9e6d3", tint: "#e6f7f1", border: "#72c9ac", text: "#242322" },
+  { name: "yellow", bg: "#f3e8a6", tint: "#fbf7dc", border: "#ddc85e", text: "#242322" },
+  { name: "mint", bg: "#c3e8c2", tint: "#eef8ee", border: "#8ecb90", text: "#242322" },
+  { name: "coral", bg: "#f6c9b4", tint: "#fcece4", border: "#e2987d", text: "#242322" },
+  { name: "mauve", bg: "#e6c9df", tint: "#f8ecf5", border: "#cd9ac0", text: "#242322" },
 ];
 
 // 프로젝트 메타데이터(제목/목표/오너 등)는 실제 관계형 테이블 projects에 저장한다(owner_id 기준
@@ -1044,9 +1050,18 @@ function GuideCoach({ phase, onGotoScreen, user }) {
 // 1번: 모든 화면 최상단에 고정되는 로고 영역. 로고는 랜딩 페이지(첫 화면)로,
 // "내 프로젝트"는 앱 내 프로젝트 목록 화면으로 이동한다. right에 화면별 우측 콘텐츠(프로필 등)를 넣는다.
 // onSaveImage가 주어지면(보드 화면에서만) "내 프로젝트" 옆에 "이미지로 저장"을 같은 텍스트 스타일로 붙인다.
-function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, minutesRecording, user, onSignOut, dotColor, right }) {
+function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, minutesRecording, user, onSignOut, dotColor, displayName, onRenameNickname, right }) {
   const goHome = () => {
     window.location.href = "/";
+  };
+  // 이름 배지 클릭 -> 인라인 편집(비제어 input, blur/Enter 시 커밋). onRenameNickname은
+  // 보드 화면(dotColor가 있을 때)에서만 넘어오므로, "내 프로젝트" 목록 등에서는 자동으로
+  // 편집 불가능한 일반 배지로 남는다.
+  const [editingNickname, setEditingNickname] = useState(false);
+  const commitNickname = (e) => {
+    setEditingNickname(false);
+    const trimmed = e.target.value.trim();
+    if (trimmed && trimmed !== displayName) onRenameNickname?.(trimmed);
   };
   return (
     <header
@@ -1159,13 +1174,28 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
               아무것도 표시하지 않는다(로그인 유도는 "내 프로젝트" 화면 본문의 큰 버튼이 담당). */}
           {user && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span
-                title={user.email || ""}
-                style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-              >
-                {dotColor && <span style={{ width: 15, height: 15, borderRadius: 999, background: dotColor, flexShrink: 0 }} />}
-                {displayNameOf(user)}
-              </span>
+              {editingNickname ? (
+                <input
+                  autoFocus
+                  defaultValue={displayName}
+                  maxLength={20}
+                  onBlur={commitNickname}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setEditingNickname(false);
+                  }}
+                  style={{ width: 120, background: "#fff", border: "1px solid #8fb9dd", borderRadius: 999, padding: "5px 12px", fontSize: 13, fontWeight: 600, color: "#242322", outline: "none" }}
+                />
+              ) : (
+                <span
+                  title={onRenameNickname ? "클릭하면 이 회의에서만 쓸 이름을 바꿀 수 있어요" : user.email || ""}
+                  onClick={onRenameNickname ? () => setEditingNickname(true) : undefined}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: onRenameNickname ? "pointer" : "default" }}
+                >
+                  {dotColor && <span style={{ width: 15, height: 15, borderRadius: 999, background: dotColor, flexShrink: 0 }} />}
+                  {displayName ?? displayNameOf(user)}
+                </span>
+              )}
               <button
                 onClick={onSignOut}
                 style={{ border: "1px solid rgba(36,35,34,.14)", background: "#fff", color: "#8a857f", borderRadius: 9, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
@@ -1197,9 +1227,11 @@ export default function FacilitationBoard() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState(""); // 프로젝트 목표 한 줄(선택 입력)
-  // 참여자 이름은 더 이상 직접 입력받지 않는다 — 팀원도 구글 로그인이 필수라, 로그인된
-  // 계정의 표시 이름을 그대로 참여 신원으로 쓴다(로그아웃 상태면 null).
-  const name = displayNameOf(user);
+  // 참여자 이름은 기본적으로 구글 로그인 계정의 표시 이름을 그대로 쓴다(로그아웃 상태면 null).
+  // nicknameOverride가 있으면(이 프로젝트에서 닉네임을 바꾼 적이 있으면) 그 값을 대신 쓴다 —
+  // 계정 전체가 아니라 "이 회의에서만" 다른 이름으로 참여할 수 있게 하기 위함.
+  const [nicknameOverride, setNicknameOverride] = useState(null);
+  const name = nicknameOverride || displayNameOf(user);
   const [board, setBoard] = useState(emptyBoard());
   // 어느 탭(STEP)을 보고 있는지는 참여자 개인 화면 상태다 — board(공유 데이터)에 넣으면
   // 폴링으로 한 사람이 탭을 넘길 때마다 다른 참여자 화면까지 같이 넘어가버린다("각자 원하는
@@ -1399,6 +1431,27 @@ export default function FacilitationBoard() {
         console.error("참여 기록 실패", error);
       }
     })();
+  }, [user?.id, selectedProject?.id]);
+
+  // 이 프로젝트에서 이미 닉네임을 바꾼 적이 있으면 그 값을 불러온다. 프로젝트를 바꾸면 일단
+  // null로 되돌려(그 사이엔 구글 이름으로 보인다) 이전 프로젝트의 override가 새 프로젝트에
+  // 잠깐이라도 새지 않게 한다.
+  useEffect(() => {
+    setNicknameOverride(null);
+    if (!user?.id || !selectedProject) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("project_members")
+        .select("display_name")
+        .eq("project_id", selectedProject.id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!cancelled && !error && data?.display_name) setNicknameOverride(data.display_name);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id, selectedProject?.id]);
 
   // 공유 링크(?p=id)로 들어온 경우 목록 화면을 거치지 않고 그 프로젝트를 바로 연다.
@@ -1687,6 +1740,71 @@ export default function FacilitationBoard() {
     joinBoard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, selectedProject?.id]);
+
+  // 이 프로젝트에서만 쓸 표시 이름을 바꾼다(계정 이름 자체는 그대로, 회의마다 다른 이름 가능).
+  // 이름이 board.users/notes.authors/votes/retros/recordingBy에 문자열 그대로 박혀 있어서, override
+  // 값만 바꾸면 지금까지 내가 쓴 포스트잇·투표·회고가 전부 "낯선 옛 이름"의 것처럼 보이게 된다 —
+  // 그래서 이름이 바뀌는 순간 보드 안의 흔적을 전부 새 이름으로 함께 옮긴다. 문서 스냅샷(snapshots[].by)은
+  // "그 시점 기록을 고정한다"는 존재 이유상 의도적으로 건드리지 않는다.
+  const updateNickname = async (rawNewName) => {
+    if (!user?.id || !selectedProject) return;
+    const newName = rawNewName.trim();
+    if (!newName || newName === name) return;
+    if (newName.length > 20) {
+      setConfirmState({
+        title: "이름이 너무 깁니다",
+        message: "20자 이내로 입력해 주세요.",
+        confirmLabel: "확인",
+        onConfirm: () => setConfirmState(null),
+      });
+      return;
+    }
+    const oldName = name;
+    let collided = false;
+    await mutateBoard((current) => {
+      collided = false;
+      if (current.users[newName]) {
+        collided = true; // 이 프로젝트에 이미 그 이름을 쓰는 참여자가 있다
+        return null;
+      }
+      const nextUsers = { ...current.users };
+      const myEntry = nextUsers[oldName];
+      delete nextUsers[oldName];
+      if (myEntry) nextUsers[newName] = myEntry;
+      const rename = (n) => (n === oldName ? newName : n);
+      const nextRetros = { ...current.retros };
+      if (oldName in nextRetros) {
+        nextRetros[newName] = nextRetros[oldName];
+        delete nextRetros[oldName];
+      }
+      return {
+        ...current,
+        users: nextUsers,
+        notes: current.notes.map((n) => ({ ...n, authors: (n.authors || []).map(rename) })),
+        votes: Object.fromEntries(
+          Object.entries(current.votes || {}).map(([noteId, voters]) => [noteId, [...new Set(voters.map(rename))]])
+        ),
+        retros: nextRetros,
+        recordingBy: current.recordingBy === oldName ? newName : current.recordingBy,
+      };
+    });
+    if (collided) {
+      setConfirmState({
+        title: "이미 사용 중인 이름입니다",
+        message: "이 프로젝트에 같은 이름을 쓰는 참여자가 이미 있어요. 다른 이름을 골라 주세요.",
+        confirmLabel: "확인",
+        onConfirm: () => setConfirmState(null),
+      });
+      return;
+    }
+    // 보드 쪽 이전(rename)이 실제로 통과한 뒤에만 override를 확정한다 — 충돌로 취소됐는데 화면만
+    // 새 이름으로 바뀌면, 데이터는 옛 이름 그대로인데 나만 새 이름으로 보이는 상태가 된다.
+    setNicknameOverride(newName);
+    const { error } = await supabase
+      .from("project_members")
+      .upsert({ project_id: selectedProject.id, user_id: user.id, display_name: newName }, { onConflict: "project_id,user_id" });
+    if (error) console.error("닉네임 저장 실패", error);
+  };
 
   const myColor = name && board.users[name] ? board.users[name].color : PALETTE[0];
 
@@ -2186,9 +2304,13 @@ export default function FacilitationBoard() {
         if (res.isFinal) finalChunk += res[0].transcript;
         else interimChunk += res[0].transcript;
       }
-      // 확정 문장은 회의록 버퍼에 누적한다. 문장 사이에 공백을 넣어 붙는 것을 막는다.
+      // 확정된 발화 단위(finalChunk)마다 줄바꿈으로 구분해 쌓는다. 한국어(ko-KR) 인식 결과에는
+      // Web Speech API가 마침표를 붙여주지 않아서, 예전처럼 공백으로만 이어붙이면 회의 전체가
+      // 문장 경계 없는 한 덩어리 텍스트가 된다 — "중복 정리"의 문장 단위 중복 제거가 전혀 못
+      // 먹었던 원인이자, docx/마크다운 내보내기가 문단 하나로 뭉쳐 나오던 원인이기도 하다
+      // (두 내보내기 코드 모두 minutes를 줄바꿈 기준으로 나눌 것을 이미 전제하고 있었다).
       if (finalChunk) {
-        const next = (minutesRef.current ? minutesRef.current + " " : "") + finalChunk.trim();
+        const next = (minutesRef.current ? minutesRef.current + "\n" : "") + finalChunk.trim();
         minutesRef.current = next;
         setMinutes(next);
       }
@@ -2689,7 +2811,7 @@ export default function FacilitationBoard() {
     if (sharedProjectId && sharedProjectNotFound) {
       return (
         <div>
-          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} displayName={name} />
           <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
             <div style={{ textAlign: "center", maxWidth: 380 }}>
               <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>프로젝트를 찾을 수 없습니다</h1>
@@ -2711,14 +2833,14 @@ export default function FacilitationBoard() {
     if (sharedProjectId) {
       return (
         <div>
-          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+          <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} displayName={name} />
           <div style={{ textAlign: "center", padding: "80px 24px", color: "#a19c95", fontSize: 14 }}>프로젝트를 불러오는 중입니다...</div>
         </div>
       );
     }
     return (
       <div>
-        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} displayName={name} />
         <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 24px 80px" }}>
           <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-.03em", margin: "0 0 7px" }}>내 프로젝트</h1>
           <div style={{ fontSize: 15, color: "#8a857f", marginBottom: 28 }}>
@@ -3161,7 +3283,7 @@ export default function FacilitationBoard() {
   if (projectDeleted) {
     return (
       <div>
-        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} />
+        <TopBar onProjects={backToProjects} user={user} onSignOut={signOut} displayName={name} />
         <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
           <div style={{ textAlign: "center", maxWidth: 380 }}>
             <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-.02em", margin: "0 0 10px" }}>이 프로젝트는 삭제되었습니다</h1>
@@ -3193,6 +3315,8 @@ export default function FacilitationBoard() {
         user={user}
         onSignOut={signOut}
         dotColor={myColor.bg}
+        displayName={name}
+        onRenameNickname={updateNickname}
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {/* "녹음 중" 배지 (시각 표시 전용). 누가 녹음 중인지 함께 보여준다 — 동시 녹음이 막히는

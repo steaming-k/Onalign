@@ -194,12 +194,17 @@ const RECORDING_STALE_MS = 35000;
 const MAX_SNAPSHOTS = 10;
 
 // 보드 변경 저장이 다른 참여자의 저장과 충돌했을 때 최신값으로 다시 시도하는 최대 횟수.
-const MUTATE_MAX_TRIES = 8;
+// 10명이 쉬지 않고 최고 속도로 연타하는 극단적 부하 테스트(사람 속도로는 사실상 안 나오는
+// 조건)로 실측: MAX_TRIES=8·최대 대기 1200ms에서는 360건 중 1건(0.28%) 재시도 소진이 나왔고,
+// MAX_TRIES=12·최대 대기 1500ms로 올리자 840건 연속 시도에서 실패 0건(관측된 최대 시도횟수 10,
+// 여유 2회)으로 안정화됐다. 실패해도 데이터가 깨지진 않는다(그 변경 하나만 무산되고 사용자에게
+// 재시도 안내가 뜬다) — 그래도 이 안내 자체를 사실상 없애기 위해 여유를 더 준다.
+const MUTATE_MAX_TRIES = 12;
 // 재시도 전 대기 시간. 백오프 없이 곧바로 다시 시도하면 충돌한 상대와 또 같은 순간에 부딪혀
-// 계속 서로를 밀어낸다(부하 테스트에서 실제로 재시도가 소진됐다). 시도마다 대기를 늘리고
-// 무작위 흔들림을 섞어, 경쟁하는 클라이언트들이 서로 다른 시점에 재시도하게 흩어준다.
+// 계속 서로를 밀어낸다. 시도마다 대기를 늘리고 무작위 흔들림을 섞어, 경쟁하는 클라이언트들이
+// 서로 다른 시점에 재시도하게 흩어준다.
 const MUTATE_RETRY_BASE_MS = 80;
-const MUTATE_RETRY_MAX_MS = 1200;
+const MUTATE_RETRY_MAX_MS = 1500;
 const mutateRetryDelay = (attempt) => {
   const grow = Math.min(MUTATE_RETRY_BASE_MS * 2 ** (attempt - 1), MUTATE_RETRY_MAX_MS);
   return Math.round(grow * (0.5 + Math.random())); // 0.5~1.5배 지터
@@ -1050,7 +1055,7 @@ function GuideCoach({ phase, onGotoScreen, user }) {
 // 1번: 모든 화면 최상단에 고정되는 로고 영역. 로고는 랜딩 페이지(첫 화면)로,
 // "내 프로젝트"는 앱 내 프로젝트 목록 화면으로 이동한다. right에 화면별 우측 콘텐츠(프로필 등)를 넣는다.
 // onSaveImage가 주어지면(보드 화면에서만) "내 프로젝트" 옆에 "이미지로 저장"을 같은 텍스트 스타일로 붙인다.
-function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, minutesRecording, user, onSignOut, dotColor, displayName, onRenameNickname, right }) {
+function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, minutesRecording, user, onSignOut, dotColor, displayName, onRenameNickname, myColor, onChangeColor, right }) {
   const goHome = () => {
     window.location.href = "/";
   };
@@ -1063,6 +1068,8 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
     const trimmed = e.target.value.trim();
     if (trimmed && trimmed !== displayName) onRenameNickname?.(trimmed);
   };
+  // 색상 점 클릭 -> 팔레트 펼침. onChangeColor도 보드 화면에서만 넘어온다(닉네임과 동일한 조건).
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
   return (
     <header
       style={{
@@ -1188,12 +1195,68 @@ function TopBar({ onProjects, onCopyLink, linkCopied, onSaveImage, onMinutes, mi
                 />
               ) : (
                 <span
-                  title={onRenameNickname ? "클릭하면 이 회의에서만 쓸 이름을 바꿀 수 있어요" : user.email || ""}
-                  onClick={onRenameNickname ? () => setEditingNickname(true) : undefined}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: onRenameNickname ? "pointer" : "default" }}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, background: dotColor ? "#f2f2f2" : "transparent", borderRadius: 999, padding: dotColor ? "5px 12px 5px 8px" : 0, fontSize: 13, fontWeight: 600, color: dotColor ? "#242322" : "#57534e", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                 >
-                  {dotColor && <span style={{ width: 15, height: 15, borderRadius: 999, background: dotColor, flexShrink: 0 }} />}
-                  {displayName ?? displayNameOf(user)}
+                  {/* 색상 점만 따로 클릭 대상(내 포스트잇 색 바꾸기) — 이름 텍스트 클릭(닉네임 편집)과
+                      영역이 겹치지 않게 분리한다. onChangeColor가 없는 화면(목록 등)에서는 그냥 점이다. */}
+                  {dotColor && (
+                    <span style={{ position: "relative", flexShrink: 0 }}>
+                      <span
+                        onClick={onChangeColor ? () => setColorPickerOpen((v) => !v) : undefined}
+                        title={onChangeColor ? "클릭해서 이 회의에서 쓸 내 포스트잇 색을 바꿀 수 있어요" : undefined}
+                        style={{ display: "block", width: 15, height: 15, borderRadius: 999, background: dotColor, cursor: onChangeColor ? "pointer" : "default" }}
+                      />
+                      {colorPickerOpen && (
+                        <>
+                          <div onClick={() => setColorPickerOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 199 }} />
+                          <div
+                            style={{
+                              position: "absolute",
+                              top: "calc(100% + 8px)",
+                              left: 0,
+                              zIndex: 200,
+                              background: "#fff",
+                              border: "1px solid rgba(36,35,34,.12)",
+                              borderRadius: 12,
+                              boxShadow: "0 10px 32px rgba(0,0,0,.16)",
+                              padding: 10,
+                              display: "grid",
+                              gridTemplateColumns: "repeat(5, 1fr)",
+                              gap: 8,
+                              width: 168,
+                            }}
+                          >
+                            {PALETTE.map((c) => (
+                              <button
+                                key={c.name}
+                                onClick={() => {
+                                  setColorPickerOpen(false);
+                                  onChangeColor(c);
+                                }}
+                                title={c.name}
+                                style={{
+                                  width: 26,
+                                  height: 26,
+                                  borderRadius: 999,
+                                  background: c.bg,
+                                  border: myColor?.name === c.name ? "3px solid #242322" : `2px solid ${c.border}`,
+                                  cursor: "pointer",
+                                  padding: 0,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </span>
+                  )}
+                  <span
+                    title={onRenameNickname ? "클릭하면 이 회의에서만 쓸 이름을 바꿀 수 있어요" : user.email || ""}
+                    onClick={onRenameNickname ? () => setEditingNickname(true) : undefined}
+                    style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: onRenameNickname ? "pointer" : "default" }}
+                  >
+                    {displayName ?? displayNameOf(user)}
+                  </span>
                 </span>
               )}
               <button
@@ -1514,7 +1577,7 @@ export default function FacilitationBoard() {
     }
     setNewProjectTitle("");
     setNewProjectGoal("");
-    setSelectedProject(fromDbProject(row));
+    openProject(fromDbProject(row));
     loadProjects();
   };
 
@@ -1555,7 +1618,25 @@ export default function FacilitationBoard() {
     setProjects((prev) => (prev || []).filter((p) => p.id !== id));
   };
 
+  // 목록 -> 프로젝트로 들어갈 때 항상 이 함수를 거친다. URL에 ?p=id를 남기는 것 자체는 예전과
+  // 같지만(새로고침해도 그 프로젝트로 돌아옴), 이번에 history.pushState로 진짜 히스토리 항목을
+  // 하나 쌓는다는 게 다르다 — 이게 없으면 브라우저 뒤로가기가 이 화면 전환을 전혀 모르고 건너뛰어,
+  // "프로젝트 생성 → 뒤로가기"가 목록이 아니라 그 이전의 완전히 다른 페이지(랜딩 등)로 튕겼다.
+  const openProject = (p) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("p", p.id);
+    window.history.pushState({}, "", url);
+    setSelectedProject(p);
+  };
+
   const backToProjects = () => {
+    // "내 프로젝트"로 돌아가는 것도 목록 진입과 마찬가지로 하나의 화면 전환이라, 여기서도
+    // pushState로 히스토리에 남긴다 — 그래야 뒤로가기가 이 전환도 정확히 되짚어갈 수 있다.
+    // 예전엔 게스트가 원래 프로젝트로 못 돌아갈까 봐 ?p=를 일부러 안 지웠는데, 이제는 "참여 중인
+    // 프로젝트" 목록(project_members 기반)이 그 문제를 근본적으로 해결해서 더 이상 필요 없다.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("p");
+    window.history.pushState({}, "", url);
     setSelectedProject(null);
     setLoaded(false);
     setMergeMode(false);
@@ -1563,16 +1644,38 @@ export default function FacilitationBoard() {
     setBoard(emptyBoard());
     setProjectDeleted(false);
     setSharedProjectNotFound(false);
-    // 공유 링크(?p=)로 들어온 뒤 "내 프로젝트"로 돌아가는 경우: 이 값이 남아있으면 shared-link
-    // effect가 방금 나온 프로젝트로 다시 데려간다. 그래서 상태만 비워 목록 화면에 머무르게 한다.
-    // 단, URL의 ?p=는 그대로 남겨둔다 — 예전에는 이걸 지워버려서, 게스트가 이 버튼을 한 번 누르면
-    // 새로고침해도 못 돌아가고 원본 링크를 다시 찾아야 했다(진입로가 파괴됨).
-    // 이제 새로고침하면 그 프로젝트로 다시 들어갈 수 있고, 아래 "참여 중인 프로젝트" 목록도 함께 남는다.
     if (sharedProjectId) setSharedProjectId(null);
     // 방금 참여한 프로젝트가 목록에 바로 보이도록 다시 읽는다(참여 기록은 진입할 때 남는다).
     loadProjects();
     loadJoinedProjects();
   };
+
+  // 브라우저 뒤로/앞으로 가기로 URL의 ?p=가 바뀌면(또는 사라지면) 그에 맞춰 화면을 동기화한다.
+  // 이 리스너가 없으면 위 pushState들이 URL만 바꿀 뿐 화면은 그대로라 뒤로가기 자체가 안 먹힌다.
+  useEffect(() => {
+    const onPopState = () => {
+      const pid = new URLSearchParams(window.location.search).get("p");
+      if (pid) {
+        (async () => {
+          const { data, error } = await supabase.from("projects").select("*").eq("id", pid).maybeSingle();
+          if (error) return; // 일시적 오류 — 화면은 그대로 두고 다음 시도를 기다린다
+          if (data) setSelectedProject(fromDbProject(data));
+          else setSharedProjectNotFound(true);
+        })();
+      } else {
+        setSelectedProject(null);
+        setLoaded(false);
+        setMergeMode(false);
+        setSelected([]);
+        setBoard(emptyBoard());
+        setProjectDeleted(false);
+        setSharedProjectNotFound(false);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 저장소에서 현재 프로젝트의 보드 상태를 읽어옴
   // 서버 최신값을 읽어 화면 상태와 조건부 저장 기준값(updated_at)을 맞추고, "방금 읽은 보드"를 반환한다.
@@ -1807,6 +1910,33 @@ export default function FacilitationBoard() {
   };
 
   const myColor = name && board.users[name] ? board.users[name].color : PALETTE[0];
+
+  // 이 프로젝트에서만 쓸 포스트잇 색을 직접 고른다. 색은 이미 board.users[name].color에 프로젝트별로
+  // 저장돼 있으므로(닉네임과 달리 별도 테이블이 필요 없다) 그 값만 바꾸면 된다. 다만 두 참여자가
+  // 같은 색을 쓰면 포스트잇 색만 보고 "누가 썼는지" 구분이 안 되므로, 이미 다른 사람이 쓰는 색은
+  // 고를 수 없게 막는다.
+  const updateMyColor = async (newColor) => {
+    if (!name || !selectedProject || myColor.name === newColor.name) return;
+    let collided = false;
+    await mutateBoard((current) => {
+      collided = false;
+      const takenByOther = Object.entries(current.users).some(([uname, u]) => uname !== name && u.color?.name === newColor.name);
+      if (takenByOther) {
+        collided = true;
+        return null;
+      }
+      if (!current.users[name]) return null; // 아직 참여 등록 전이면 조용히 무시(곧 joinBoard가 배정)
+      return { ...current, users: { ...current.users, [name]: { ...current.users[name], color: newColor } } };
+    });
+    if (collided) {
+      setConfirmState({
+        title: "이미 사용 중인 색상입니다",
+        message: "이 프로젝트에서 다른 참여자가 이미 쓰고 있는 색이에요. 다른 색을 골라 주세요.",
+        confirmLabel: "확인",
+        onConfirm: () => setConfirmState(null),
+      });
+    }
+  };
 
   // 새 포스트잇을 지정된 의견 보드(topic) 맨 아래에 추가한다. 배열의 뒤쪽에 붙이는 것만으로
   // "추가하면 하단에 생기는" 순서가 자연스럽게 보장된다 (별도 좌표 계산이 필요 없음)
@@ -2914,7 +3044,7 @@ export default function FacilitationBoard() {
                     📌
                   </span>
                   <button
-                    onClick={() => setSelectedProject(p)}
+                    onClick={() => openProject(p)}
                     style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
                   >
                     <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
@@ -2923,7 +3053,7 @@ export default function FacilitationBoard() {
                     </div>
                   </button>
                   <button
-                    onClick={() => setSelectedProject(p)}
+                    onClick={() => openProject(p)}
                     style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
                   >
                     열기
@@ -3001,7 +3131,7 @@ export default function FacilitationBoard() {
                         참여
                       </span>
                       <button
-                        onClick={() => setSelectedProject(p)}
+                        onClick={() => openProject(p)}
                         style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
                       >
                         <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
@@ -3010,7 +3140,7 @@ export default function FacilitationBoard() {
                         </div>
                       </button>
                       <button
-                        onClick={() => setSelectedProject(p)}
+                        onClick={() => openProject(p)}
                         style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
                       >
                         열기
@@ -3315,6 +3445,8 @@ export default function FacilitationBoard() {
         user={user}
         onSignOut={signOut}
         dotColor={myColor.bg}
+        myColor={myColor}
+        onChangeColor={updateMyColor}
         displayName={name}
         onRenameNickname={updateNickname}
         right={

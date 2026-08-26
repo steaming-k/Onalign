@@ -1290,6 +1290,9 @@ export default function FacilitationBoard() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectGoal, setNewProjectGoal] = useState(""); // 프로젝트 목표 한 줄(선택 입력)
+  const [editingProjectId, setEditingProjectId] = useState(null); // "내 프로젝트" 목록에서 인라인으로 이름/목표 수정 중인 프로젝트
+  const [editTitle, setEditTitle] = useState("");
+  const [editGoal, setEditGoal] = useState("");
   // 참여자 이름은 기본적으로 구글 로그인 계정의 표시 이름을 그대로 쓴다(로그아웃 상태면 null).
   // nicknameOverride가 있으면(이 프로젝트에서 닉네임을 바꾼 적이 있으면) 그 값을 대신 쓴다 —
   // 계정 전체가 아니라 "이 회의에서만" 다른 이름으로 참여할 수 있게 하기 위함.
@@ -1606,6 +1609,31 @@ export default function FacilitationBoard() {
       return;
     }
     setProjects((prev) => (prev || []).map((p) => (p.id === id ? { ...p, pinned } : p)));
+  };
+
+  // "내 프로젝트" 목록에서 이름/목표를 나중에 바꿀 방법이 없다는 피드백으로 추가한 인라인 수정.
+  // updateProjectGoal(위)은 보드 화면 안에서 selectedProject 기준으로만 동작해서, 목록 화면에서
+  // 아직 열지 않은 프로젝트를 대상으로도 쓸 수 있는 별도 경로가 필요했다.
+  const startEditProject = (p) => {
+    setEditingProjectId(p.id);
+    setEditTitle(p.title);
+    setEditGoal(p.goal || "");
+  };
+
+  const cancelEditProject = () => setEditingProjectId(null);
+
+  const saveEditProject = async (id) => {
+    const title = editTitle.trim();
+    if (!title) return;
+    const goal = editGoal.trim();
+    const { error } = await supabase.from("projects").update({ title, goal }).eq("id", id);
+    if (error) {
+      console.error("프로젝트 정보 수정 실패", error);
+      return;
+    }
+    setProjects((prev) => (prev || []).map((p) => (p.id === id ? { ...p, title, goal } : p)));
+    setSelectedProject((prev) => (prev && prev.id === id ? { ...prev, title, goal } : prev));
+    setEditingProjectId(null);
   };
 
   const deleteProject = async (id) => {
@@ -3043,55 +3071,109 @@ export default function FacilitationBoard() {
                   >
                     📌
                   </span>
-                  <button
-                    onClick={() => openProject(p)}
-                    style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
-                    <div style={{ fontSize: 14, color: "#8a857f" }}>
-                      {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성{p.goal ? ` · ${p.goal}` : ""}
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => openProject(p)}
-                    style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
-                  >
-                    열기
-                  </button>
-                  <button
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const url = `${window.location.origin}${window.location.pathname}?p=${p.id}`;
-                      await navigator.clipboard.writeText(url);
-                      setCopiedLinkId(p.id);
-                      setTimeout(() => setCopiedLinkId((cur) => (cur === p.id ? null : cur)), 1800);
-                    }}
-                    title="팀원과 공유할 링크 복사 (로그인 없이 이 프로젝트로 바로 들어옵니다)"
-                    style={{ background: copiedLinkId === p.id ? "#e6f7f1" : "#ffffff", border: `1px solid ${copiedLinkId === p.id ? "#a9e6d3" : "rgba(36,35,34,.1)"}`, borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: copiedLinkId === p.id ? "#1e7a4d" : "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
-                  >
-                    {copiedLinkId === p.id ? "✓ 복사됨" : "링크 복사"}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmState({
-                        title: "프로젝트 삭제",
-                        message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
-                        confirmLabel: "삭제",
-                        onConfirm: () => {
-                          deleteProject(p.id);
-                          setConfirmState(null);
-                        },
-                      });
-                    }}
-                    title="삭제"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "#c4bfb8", padding: 6, flexShrink: 0, display: "flex" }}
-                  >
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
-                  </button>
+                  {editingProjectId === p.id ? (
+                    <>
+                      <div style={{ flex: 1, display: "flex", gap: 8, minWidth: 0 }}>
+                        <input
+                          value={editTitle}
+                          onChange={(e) => setEditTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEditProject(p.id);
+                            if (e.key === "Escape") cancelEditProject();
+                          }}
+                          placeholder="프로젝트 이름 (필수)"
+                          autoFocus
+                          style={{ flex: "1 1 140px", border: "1px solid rgba(36,35,34,.14)", borderRadius: 8, padding: "8px 10px", fontSize: 14, outline: "none", boxSizing: "border-box", minWidth: 0 }}
+                        />
+                        <input
+                          value={editGoal}
+                          onChange={(e) => setEditGoal(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEditProject(p.id);
+                            if (e.key === "Escape") cancelEditProject();
+                          }}
+                          placeholder="목표 한 줄 (선택)"
+                          style={{ flex: "2 1 180px", border: "1px solid rgba(36,35,34,.14)", borderRadius: 8, padding: "8px 10px", fontSize: 14, outline: "none", boxSizing: "border-box", minWidth: 0 }}
+                        />
+                      </div>
+                      <button
+                        onClick={() => saveEditProject(p.id)}
+                        style={{ background: "#242322", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        저장
+                      </button>
+                      <button
+                        onClick={cancelEditProject}
+                        style={{ background: "none", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#8a857f", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        취소
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => openProject(p)}
+                        style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, minWidth: 0 }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: "-.01em", marginBottom: 7, color: "#242322" }}>{p.title}</div>
+                        <div style={{ fontSize: 14, color: "#8a857f" }}>
+                          {new Date(p.createdAt).toLocaleDateString("ko-KR")} 생성{p.goal ? ` · ${p.goal}` : ""}
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => openProject(p)}
+                        style={{ background: "#ffffff", border: "1px solid rgba(36,35,34,.1)", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        열기
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const url = `${window.location.origin}${window.location.pathname}?p=${p.id}`;
+                          await navigator.clipboard.writeText(url);
+                          setCopiedLinkId(p.id);
+                          setTimeout(() => setCopiedLinkId((cur) => (cur === p.id ? null : cur)), 1800);
+                        }}
+                        title="팀원과 공유할 링크 복사 (로그인 없이 이 프로젝트로 바로 들어옵니다)"
+                        style={{ background: copiedLinkId === p.id ? "#e6f7f1" : "#ffffff", border: `1px solid ${copiedLinkId === p.id ? "#a9e6d3" : "rgba(36,35,34,.1)"}`, borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: copiedLinkId === p.id ? "#1e7a4d" : "#242322", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        {copiedLinkId === p.id ? "✓ 복사됨" : "링크 복사"}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditProject(p);
+                        }}
+                        title="수정"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#c4bfb8", padding: 6, flexShrink: 0, display: "flex" }}
+                      >
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmState({
+                            title: "프로젝트 삭제",
+                            message: `'${p.title}' 프로젝트를 삭제하시겠습니까?`,
+                            confirmLabel: "삭제",
+                            onConfirm: () => {
+                              deleteProject(p.id);
+                              setConfirmState(null);
+                            },
+                          });
+                        }}
+                        title="삭제"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#c4bfb8", padding: 6, flexShrink: 0, display: "flex" }}
+                      >
+                        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
                 </motion.div>
               ))}
             </AnimatePresence>
